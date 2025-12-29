@@ -2,7 +2,7 @@
 pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 pip config set global.extra-index-url https://download.pytorch.org/whl/cu129
 
-# 指定清华源安装 vllm
+# 指定清华源安装
 pip install <package-name> -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 安装 flash-attn 2
