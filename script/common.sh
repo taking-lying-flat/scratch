@@ -8,6 +8,14 @@ pip install <package-name> -i https://pypi.tuna.tsinghua.edu.cn/simple
 # 安装 flash-attn 2
 pip install packaging ninja
 pip install flash-attn --no-build-isolation
+# 源码安装
+git clone --recursive https://github.com/Dao-AILab/flash-attention.git
+cd flash-attention
+git submodule update --init --recursive
+pip install -U pip setuptools wheel
+pip install -U packaging ninja
+export MAX_JOBS=16
+pip install -v . --no-build-isolation
 
 # 安装 ms-swift
 pip install ms-swift -U
