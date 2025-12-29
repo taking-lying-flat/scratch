@@ -1,3 +1,5 @@
+pip show <pkg>                    # 看版本/安装路径/依赖
+
 # 配置清华源
 pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 pip config set global.extra-index-url https://download.pytorch.org/whl/cu129
