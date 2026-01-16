@@ -65,3 +65,8 @@ class MultiHeadAttention(nn.Module):
         out = out.transpose(1, 2).contiguous().view(B, T, C)   # (B, T, C)
         out = self.out_proj(out)
         return out
+
+
+def count_tokens(text):
+    encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")  # Using a default model
+    return len(encoding.encode(text))
