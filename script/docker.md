@@ -1,5 +1,3 @@
-# 容器：镜像固化 / 推送拉取 / HPC 多卡训练容器启动
-
 ## 1. 镜像管理
 
 ### 固化当前容器为本地镜像
@@ -22,11 +20,7 @@ docker push <REGISTRY>/<NAMESPACE>/<IMAGE_NAME>:<TAG>
 docker pull <REGISTRY>/<NAMESPACE>/<IMAGE_NAME>:<TAG>
 ```
 
----
-
-## 2. HPC / 多卡训练容器启动
-
-此配置开启了 GPU、RDMA、Host IPC/Net、挂载及无限栈内存（ulimit）。
+### HPC / 多卡训练容器启动
 
 ```bash
 docker run -it --name <CONTAINER_NAME> \
