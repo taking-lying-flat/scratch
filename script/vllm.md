@@ -20,12 +20,12 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 nohup python -m vllm.entrypoints.openai.api_server \
   --model "$MODEL_PATH" \
   --served-model-name "$SERVED_NAME" \
-  --host "$HOST" \
-  --port "$PORT" \
+  --host 0.0.0.0 \
+  --port 8000 \
   --trust-remote-code \
   --max-model-len 4096 \
   --tensor-parallel-size 8 \
-  --gpu-memory-utilization 0.75 \
+  --gpu-memory-utilization 0.85 \
   --dtype bfloat16 \
   --max-num-seqs 32 \
   --disable-log-requests \
