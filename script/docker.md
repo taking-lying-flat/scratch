@@ -1,26 +1,26 @@
-## 1. 镜像管理
+## 镜像管理
 
-### 固化当前容器为本地镜像
+- 固化当前容器为本地镜像
 ```bash
 docker commit <CONTAINER_NAME_OR_ID> <LOCAL_IMAGE_NAME>:<TAG>
 ```
 
-### 给本地镜像打远端仓库标签
+- 给本地镜像打远端仓库标签
 ```bash
 docker tag <LOCAL_IMAGE_NAME>:<TAG> <REGISTRY>/<NAMESPACE>/<IMAGE_NAME>:<TAG>
 ```
 
-### 推送到远端仓库
+- 推送到远端仓库
 ```bash
 docker push <REGISTRY>/<NAMESPACE>/<IMAGE_NAME>:<TAG>
 ```
 
-### 从远端仓库拉取
+- 从远端仓库拉取
 ```bash
 docker pull <REGISTRY>/<NAMESPACE>/<IMAGE_NAME>:<TAG>
 ```
 
-### HPC / 多卡训练容器启动
+- HPC / 多卡训练容器启动
 
 ```bash
 docker run -it --name <CONTAINER_NAME> \
