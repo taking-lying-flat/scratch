@@ -37,7 +37,7 @@ pip install -U packaging ninja
 MAX_JOBS=4 pip install -v . --no-build-isolation
 ```
 
-## 3. MS-Swift 安装
+## 3. ms-swift 安装
 
 ```bash
 # PyPI 安装
