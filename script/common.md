@@ -5,10 +5,10 @@
 pip show <pkg>
 
 # 配置清华源 (全局设置)
-pip config set global.index-url [https://pypi.tuna.tsinghua.edu.cn/simple](https://pypi.tuna.tsinghua.edu.cn/simple)
+pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 临时使用清华源安装
-pip install <package-name> -i [https://pypi.tuna.tsinghua.edu.cn/simple](https://pypi.tuna.tsinghua.edu.cn/simple)
+pip install <package-name> -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # Conda 安装 xformers
 conda install -c conda-forge xformers -y
@@ -25,7 +25,7 @@ pip install flash-attn --no-build-isolation
 ### 源码编译安装
 *适用于预编译包不兼容或需要特定版本的情况。*
 ```bash
-git clone --recursive [https://github.com/Dao-AILab/flash-attention.git](https://github.com/Dao-AILab/flash-attention.git)
+git clone --recursive https://github.com/Dao-AILab/flash-attention.git
 cd flash-attention
 git submodule update --init --recursive
 
@@ -47,13 +47,12 @@ pip install ms-swift -U
 pip install -e .
 
 # 安装 Qwen-VL 等多模态所需依赖
-pip install "qwen_vl_utils>=0.0.14" "decord" -U -i [https://mirrors.aliyun.com/pypi/simple/](https://mirrors.aliyun.com/pypi/simple/)
+pip install "qwen_vl_utils>=0.0.14" "decord" -U -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 ## 4. 维护与初始化
 
 ### 缓存清理
-*建议在磁盘空间不足或环境异常时执行。*
 ```bash
 # 清理包管理器缓存
 pip cache purge
