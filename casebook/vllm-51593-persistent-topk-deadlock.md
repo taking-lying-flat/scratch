@@ -1,16 +1,16 @@
 # vLLM #51593：负长度触发 Persistent Top-K CTA 死锁
 
-> DeepSeek-V4 MTP 在 SM120 下的 `persistent_topk` 死锁分析
+> `DeepSeek-V4 MTP` 在 `SM120` 下的 `persistent_topk` 死锁分析
 
 | 项目 | 内容 |
 | --- | --- |
 | 上游 Issue | [vllm-project/vllm#51593](https://github.com/vllm-project/vllm/issues/51593) |
-| 触发条件 | DeepSeek-V4、MTP、FULL CUDA Graph padding、SM120 |
+| 触发条件 | `DeepSeek-V4`、`MTP`、`FULL CUDA Graph padding`、`SM120` |
 | 表面症状 | `shm_broadcast timeout`、`EngineDeadError`、GPU 利用率接近 100% |
-| 实际故障点 | `persistent_topk` 的 multi-CTA radix barrier |
+| 实际故障点 | `persistent_topk` 的 `multi-CTA radix barrier` |
 
-> [!IMPORTANT]
-> **根因**：`MTP + FULL CUDA Graph padding` 产生了负的 per-token context length。`persistent_topk` 将 `int32 -1` 作为 `uint32_t` 读取后得到 `UINT_MAX`，导致同一 CTA group 的 leader 和 peer 对是否进入 multi-CTA radix path 作出相反判断。peer 提前退出，leader 永久等待 inter-CTA barrier，最终表现为 `shm_broadcast timeout` 和 `EngineDeadError`。
+> [!CAUTION]
+> **根因**：`MTP + FULL CUDA Graph padding` 产生了负的 `per-token context length`。`persistent_topk` 将 `int32 -1` 作为 `uint32_t` 读取后得到 `UINT_MAX`，导致同一 `CTA group` 的 `leader` 和 `peer` 对是否进入 `multi-CTA radix path` 作出相反判断。`peer` 提前退出，`leader` 永久等待 `inter-CTA barrier`，最终表现为 `shm_broadcast timeout` 和 `EngineDeadError`。
 
 ## 目录
 
@@ -49,15 +49,20 @@ CUDA Graph padding slot
   -> EngineCore eventually reports shm_broadcast timeout
 ```
 
+```diff
+- 实际生成的 padding context lengths: [-1, 0]
++ 必须满足的合法值:                 [ 0, 0]
+```
+
 ## 根因分析
 
 ### 1. MTP 与 CUDA Graph padding
 
-MTP 是整条故障链的起点。普通 decode 一次 forward 中，每个 request 只处理当前位置的一个 query token，因此 `next_n=1`。这个复现使用 `num_speculative_tokens=1`，所以 target verification 一次会处理两个连续位置，也就是 `next_n=2`：第一个是当前 target position，第二个是 MTP speculative position
+`MTP` 是整条故障链的起点。普通 `decode` 一次 `forward` 中，每个 `request` 只处理当前位置的一个 `query token`，因此 `next_n=1`。这个复现使用 `num_speculative_tokens=1`，所以 `target verification` 一次会处理两个连续位置，也就是 `next_n=2`：第一个是当前 `target position`，第二个是 `MTP speculative position`
 
-- 服务刚开始时可以有很多并发 request，但每个 request 的输出长度不同，有些会先结束，因此 running batch 会随着生成过程逐渐下降。所谓`剩下 3 个真实 request`，并不是系统固定创建 3 个 request，而只是某一轮 scheduler 调度时，前面的请求已经陆续结束，此时还有 3 个真实 request 继续生成
+- 服务刚开始时可以有很多并发 `request`，但每个 `request` 的输出长度不同，有些会先结束，因此 `running batch` 会随着生成过程逐渐下降。所谓“剩下 3 个真实 `request`”，并不是系统固定创建 3 个 `request`，而只是某一轮 `scheduler` 调度时，前面的请求已经陆续结束，此时还有 3 个真实 `request` 继续生成
 
-- 当剩下 3 个 request 时，MTP 一轮实际上需要处理 3 × 2 = 6 个真实 query token。但是 FULL CUDA Graph 不能像 eager 模式一样每一步都用任意 shape，它会 replay 已经提前 capture 好的固定 shape。这个场景使用的是 `8-token graph`，所以 6 个真实 token 必须补到 8 个。额外的两个 token 正好对应一个完整的 `MTP request slot`，因此 graph metadata 中实际上会出现 4 个`request slot`：前三个是真实 request，最后一个只是 padding
+- 当剩下 3 个 `request` 时，`MTP` 一轮实际上需要处理 3 × 2 = 6 个真实 `query token`。但是 `FULL CUDA Graph` 不能像 `eager` 模式一样每一步都使用任意 `shape`，它会 `replay` 已经提前 `capture` 好的固定 `shape`。这个场景使用的是 `8-token graph`，所以 6 个真实 `token` 必须补到 8 个。额外的两个 `token` 正好对应一个完整的 `MTP request slot`，因此 `graph metadata` 中实际上会出现 4 个 `request slot`：前三个是真实 `request`，最后一个只是 `padding`
 
     ```text
     3 real requests × 2 MTP positions = 6 real query tokens
@@ -75,7 +80,7 @@ MTP 是整条故障链的起点。普通 decode 一次 forward 中，每个 requ
 
 ### 2. 合法的 padding 元数据如何变成 `-1`
 
-- `query_start_loc` 表示每个 request 在 query-token buffer 中的边界，所以前三个 request 分别对应 `[0,2)`、`[2,4)`、`[4,6)`，最后一个 padding request 对应 `[6,6)`，说明它实际上没有任何真实 query token。`seq_lens` 是 request 级别的当前 `sequence length`，`padding request`没有历史有效序列，所以它的 `seq_len=0` 是完全正确的；`decode_lens=0` 也同样正确。因此 CUDA Graph padding 本身没有制造非法数据，真正的 bug 是后面的 MTP metadata preparation 把这个合法的 0 继续展开成负数
+- `query_start_loc` 表示每个 `request` 在 `query-token buffer` 中的边界，所以前三个 `request` 分别对应 `[0,2)`、`[2,4)`、`[4,6)`，最后一个 `padding request` 对应 `[6,6)`，说明它实际上没有任何真实 `query token`。`seq_lens` 是 `request` 级别的当前 `sequence length`，`padding request` 没有历史有效序列，所以它的 `seq_len=0` 是完全正确的；`decode_lens=0` 也同样正确。因此 `CUDA Graph padding` 本身没有制造非法数据，真正的 bug 是后面的 `MTP metadata preparation` 把这个合法的 0 继续展开成负数
 
 - `native MTP path` 需要把 `request-level` `seq_lens` 转成每个 `speculative position` 对应的 `context length`。对于一个正常长度为 `L` 的 request，一次处理两个连续位置时，第一个位置能够看到 `L-1` 个 KV，第二个位置能够看到 `L` 个 KV，因此代码使用 `seq_lens.unsqueeze(1) - max_decode_len + 1 + offsets` 来生成 `[L-1, L]`。对于正常 request 这个计算没有问题
 
@@ -100,19 +105,19 @@ MTP 是整条故障链的起点。普通 decode 一次 forward 中，每个 requ
     return seq_lens, block_table, decode_lens, num_decodes, requires_padding
     ```
 
-普通 decode 的 `next_n=1`，同一个公式退化成 `seq_len - 1 + 1 = seq_len`，所以 padding 的 0 仍然是 0；MTP 的 `next_n=2` 才会让第一个位置相当于 `seq_len-1`，因此当 padding request 的 `seq_len=0` 时得到 `-1`
+普通 `decode` 的 `next_n=1`，同一个公式退化成 `seq_len - 1 + 1 = seq_len`，所以 `padding` 的 0 仍然是 0；`MTP` 的 `next_n=2` 才会让第一个位置相当于 `seq_len-1`，因此当 `padding request` 的 `seq_len=0` 时得到 `-1`
 
-`variable-length flatten path` 又是另外一种情况：它根据真实 `decode_lens` 去展开 token，padding request 的 `decode_len=0`，因此根本不会生成任何 expanded token，剩余 buffer 还会被清零，所以那条路径不会产生这个 -1
+`variable-length flatten path` 又是另外一种情况：它根据真实 `decode_lens` 去展开 `token`，`padding request` 的 `decode_len=0`，因此根本不会生成任何 `expanded token`，剩余 `buffer` 还会被清零，所以那条路径不会产生这个 `-1`
 
-真正有问题的是 native MTP 的固定二维 metadata layout，以及公式本身同样未 clamp 的 uniform speculative path
+真正有问题的是 `native MTP` 的固定二维 `metadata layout`，以及公式本身同样未 `clamp` 的 `uniform speculative path`
 
 ### 3. 负长度穿过 C4 indexer
 
-- DeepSeek-V4 的 `C4 indexer` 还会把这些 `context length` 转换到压缩后的 KV 空间，`compress_ratio=4`。正常长度例如 100 会变成 25，但 Python 的 `//` 是 floor division，所以 `-1 // 4` 仍然是 `-1`，而不是 0。因此这个非法值经过 C4 后没有被消掉，继续向下流入 `top-k`。与此同时，服务配置里的 `max_model_len=65536` 在 C4 indexer 中实际只对应 65536 / 4 = 16384 个 candidate，所以后面 `persistent_topk` 看到的 logits row width 是 16384
+- `DeepSeek-V4` 的 `C4 indexer` 还会把这些 `context length` 转换到压缩后的 KV 空间，`compress_ratio=4`。正常长度例如 100 会变成 25，但 Python 的 `//` 是 `floor division`，所以 `-1 // 4` 仍然是 `-1`，而不是 0。因此这个非法值经过 `C4` 后没有被消掉，继续向下流入 `top-k`。与此同时，服务配置里的 `max_model_len=65536` 在 `C4 indexer` 中实际只对应 65536 / 4 = 16384 个 `candidate`，所以后面 `persistent_topk` 看到的 `logits row width` 是 16384
 
 ### 4. Leader 与 peer 的判断发生分裂
 
-- SM120 上 sparse indexer 不会走 `cooperative_topk`，这一架构被 cooperative path 明确排除，最终调用的是 `persistent_topk`。这里真正危险的不是单纯“收到一个 `-1`”，而是 kernel 内部有两套决定是否进入 multi-CTA radix 的判断来源。`non-leader CTA` 在 kernel 很早的位置只检查 host 已经传进来的 `params.max_seq_len`；当前值是 16384，小于 `RADIX_THRESHOLD=32768`，因此 non-leader CTA 会认为所有 row 都是 short/medium row，没有必要参与 `multi-CTA radix`
+- `SM120` 上的 `sparse indexer` 不会走 `cooperative_topk`，这一架构被 `cooperative path` 明确排除，最终调用的是 `persistent_topk`。这里真正危险的不是单纯“收到一个 `-1`”，而是 kernel 内部有两套决定是否进入 `multi-CTA radix` 的判断来源。`non-leader CTA` 在 kernel 很早的位置只检查 host 已经传进来的 `params.max_seq_len`；当前值是 16384，小于 `RADIX_THRESHOLD=32768`，因此 `non-leader CTA` 会认为所有 row 都是 `short/medium row`，没有必要参与 `multi-CTA radix`
 
     ```text
     FULL CUDA Graph  需要固定 8-token shape
@@ -132,11 +137,11 @@ MTP 是整条故障链的起点。普通 decode 一次 forward 中，每个 requ
     非法 -1 进入 persistent_topk
     ```
 
-- leader CTA 后面处理具体 row 时却不是看这个 host scalar，而是重新从 device memory 读取 `params.lengths[row_idx]`。问题是 `lengths` 的元素本来是 `int32`，但代码直接写成`const uint32_t seq_len = params.lengths[row_idx]`
+- `leader CTA` 后面处理具体 row 时却不是看这个 `host scalar`，而是重新从 `device memory` 读取 `params.lengths[row_idx]`。问题是 `lengths` 的元素本来是 `int32`，但代码直接写成 `const uint32_t seq_len = params.lengths[row_idx]`
 
 - 于是 `padding row` 中的 `-1` 在任何判断之前就变成 `UINT_MAX`，即 4294967295
 
-- leader 接下来比较 `seq_len <= RADIX_THRESHOLD` 时自然得到 false，因此它认为这个 row 是一个超长 row，必须进入 multi-CTA `radix_topk`。这时同一个 CTA group 已经发生逻辑分裂：peer CTA 根据 `max_seq_len=16384` 提前退出，leader CTA 根据错误的 `row length=UINT_MAX` 进入只有完整 CTA group 才能运行的 radix path
+- `leader` 接下来比较 `seq_len <= RADIX_THRESHOLD` 时自然得到 `false`，因此它认为这个 row 是一个超长 row，必须进入 multi-CTA `radix_topk`。这时同一个 `CTA group` 已经发生逻辑分裂：`peer CTA` 根据 `max_seq_len=16384` 提前退出，`leader CTA` 根据错误的 `row length=UINT_MAX` 进入只有完整 `CTA group` 才能运行的 `radix path`
 
     ```text
     padding request
@@ -170,11 +175,17 @@ MTP 是整条故障链的起点。普通 decode 一次 forward 中，每个 requ
 
 ### 5. Inter-CTA barrier 永久等待
 
-`radix_topk`进入后使用`arrival_counter`做`inter-CTA barrier`。当前`ctas_per_group=2`，所以`barrier`初始阶段需要两个`CTA`都到达，`target`是 2
+`radix_topk` 进入后使用 `arrival_counter` 做 `inter-CTA barrier`。当前 `ctas_per_group=2`，所以 barrier 初始阶段需要两个 CTA 都到达，`target` 是 2。
 
-但现场 cuda-gdb 抓到的是`arrival_counter=1`、`target_val=2`：只有 leader CTA 到达过，另一个 CTA 已经执行 early return。因为没有任何 CTA 再能把 counter 从 1 加到 2，所以 leader 永远 spin 在 `wait_ge()`，整个 kernel 永远不会 retire。GPU 因此显示接近 100% utilization，但几乎没有 memory activity；CPU 侧真正接触 GPU 结果的是 async output-copy thread，它一直卡在 `copy_event.synchronize()`，所以 `worker main thread` 看起来只是正常 idle 在 `zmq_poll`
+但现场 `cuda-gdb` 抓到的是 `arrival_counter=1`、`target_val=2`：只有 `leader CTA` 到达过，另一个 CTA 已经执行 `early return`。因为没有任何 CTA 再能把 counter 从 1 加到 2，所以 `leader` 永远 spin 在 `wait_ge()`，整个 kernel 永远不会 retire。GPU 因此显示接近 100% utilization，但几乎没有 memory activity；CPU 侧真正接触 GPU 结果的是 `async output-copy thread`，它一直卡在 `copy_event.synchronize()`，所以 `worker main thread` 看起来只是正常 idle 在 `zmq_poll`。
+
+> [!WARNING]
+> 调试现场的决定性证据是 `arrival_counter=1`、`target_val=2`：`leader CTA` 已到达 barrier，而已经 `early return` 的 `peer CTA` 永远不会再把计数器推进到 2。
 
 ## 修复建议
+
+> [!TIP]
+> 建议同时修复两层：`producer` 保证不产生负长度，`consumer` 则维护 `0 <= seq_len <= min(stride, max_seq_len)`，避免其他 `caller` 再次破坏 `kernel invariant`。
 
 ### Producer：禁止产生负 context length
 
