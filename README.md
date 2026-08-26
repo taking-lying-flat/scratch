@@ -4,5 +4,5 @@
 
 ## Casebook
 
-- [CUDA 同步故障案例：ZeRO-3 梯度竞态与 GDN Pipeline 死锁](casebook/cuda-synchronization-casebook.md)
+- [FlashInfer SM100 GDN Pipeline 死锁](casebook/flashinfer-sm100-gdn-pipeline-deadlock.md)
 - [vLLM #51593：负长度触发 Persistent Top-K CTA 死锁](casebook/vllm-51593-persistent-topk-deadlock.md)
