@@ -8,7 +8,7 @@
 | `FlashInfer GDN` | [flashinfer#3581](https://github.com/flashinfer-ai/flashinfer/pull/3581) | `FlashInfer 0.6.12 / 0.6.13`、`SM100` | `prefill` 随机永久卡住 | `CUTLASS pipeline ownership violation` |
 
 > [!IMPORTANT]
-> 两个问题都不是普通的数值精度故障。`DeepSpeed` 等错了梯度的生产 `stream`；`FlashInfer` 则让非 `owner` 参与了 `pipeline` 的终止同步。前者破坏数据的 `happens-before` 关系，后者破坏 `mbarrier` 的 `phase/lifetime` 状态。
+> 两个问题都不是普通的数值精度故障。`DeepSpeed` 等错梯度的生产 `stream`；`FlashInfer` 则让非 `owner` 参与 `pipeline` 的终止同步。前者破坏数据的 `happens-before` 关系，后者破坏 `mbarrier` 的 `phase/lifetime` 状态。
 
 ## 目录
 
@@ -32,7 +32,7 @@
 
 ### 现象与复现结果
 
-上游复现展示了典型的随机污染特征：
+上游复现展示典型的随机污染特征：
 
 | 配置项 | 复现环境 / 结果 |
 | --- | --- |
@@ -97,7 +97,7 @@ reduce_and_partition_stream:
 ```
 
 > [!WARNING]
-> `reduce_stream.wait_stream(default_stream)` 只能证明 `default stream` 已完成，不能证明真正写入 `param.grad` 的 `backward_stream` 已完成。等待了错误的对象，等价于没有建立所需的数据依赖。
+> `reduce_stream.wait_stream(default_stream)` 只能证明 `default stream` 已完成，不能证明真正写入 `param.grad` 的 `backward_stream` 已完成。等待错误的对象，等价于没有建立所需的数据依赖。
 
 ### `Race` 如何污染权重
 
@@ -129,7 +129,7 @@ S1 / backward_stream                   reduce_and_partition_stream
 > [!NOTE]
 > `Race` 发生在 `backward`，但首先损坏的是 `gradient`，而不是 `parameter`。`Adam/AdamW` 在 `optimizer.step()` 中消费错误梯度，更新一阶动量、二阶动量和 `parameter partition` 后，`NaN` 才真正进入权重。
 
-因此，从外部看起来像是“`optimizer` 第一步把权重算坏了”，实际却是 `optimizer` 消费了上一步已经被 `CUDA race` 污染的 `gradient shard`。
+因此，从外部看起来像是“`optimizer` 第一步把权重算坏”，实际却是 `optimizer` 消费上一步已经被 `CUDA race` 污染的 `gradient shard`。
 
 ### 修复为什么有效
 
@@ -140,14 +140,14 @@ S1 / backward_stream                   reduce_and_partition_stream
 - 修改不会牺牲 `overlap`，只会补齐缺失的 `stream synchronization`。
 
 > [!TIP]
-> 并发语义可以概括为：不要猜 `producer` 位于哪个 `stream`，而应等待实际 `producer`。修复恢复了 `backward_stream -> reduce_stream` 的 `happens-before` 边。
+> 并发语义可以概括为：不要猜 `producer` 位于哪个 `stream`，而应等待实际 `producer`。修复恢复 `backward_stream -> reduce_stream` 的 `happens-before` 边。
 
 ## 案例二：FlashInfer GDN Pipeline 死锁
 
 ### TL;DR
 
 > [!CAUTION]
-> `SM100 GDN prefill kernel` 中，`o_store pipeline` 的合法 `producer` 是 `CG1`，但 `CG0` 也错误调用了 `o_store_producer.tail()`。`CG0` 没有执行配套的 `acquire/commit`，其本地 `PipelineState` 与真实 `mbarrier phase` 不一致，最终等待一个不会再出现的 `barrier transition`。
+> `SM100 GDN prefill kernel` 中，`o_store pipeline` 的合法 `producer` 是 `CG1`，但 `CG0` 也错误调用 `o_store_producer.tail()`。`CG0` 没有执行配套的 `acquire/commit`，其本地 `PipelineState` 与真实 `mbarrier phase` 不一致，最终等待一个不会再出现的 `barrier transition`。
 
 这个缺陷在 `non-null initial state` 与 `long-tail ragged varlen workload` 下更容易触发。局部 `warp group` 阻塞会进一步阻止整个 `CTA` 完成，最终表现为 `GPU kernel hang`。
 
@@ -216,9 +216,9 @@ o_store_producer, o_store_consumer = pipeline.PipelineAsync.create(
 
 `PipelineState` 保存 `circular buffer` 当前的 `index` 和 `phase`。`tail()` 仍属于同步协议的一部分，必须基于该 `producer` 经过 `acquire/commit` 后形成的正确状态执行。
 
-### 错误的 `owner` 调用了 `tail()`
+### 错误的 `owner` 调用 `tail()`
 
-`CG0` 的收尾代码错误包含了：
+`CG0` 的收尾代码错误包含：
 
 ```python
 work = scheduler.get_current_work()
@@ -297,9 +297,9 @@ CG0 等不到 mbarrier
 | 共享对象 | `param.grad / gradient buffer` | `o_store pipeline / mbarrier state` |
 | 合法 `producer` | `autograd current/backward stream` | `CG1` |
 | 合法 `consumer` | `reduce_and_partition_stream` | `epilogue warp` |
-| 被破坏的规则 | `consumer` 等待了错误的 `stream` | 非 `owner` 推进 `producer termination` |
+| 被破坏的规则 | `consumer` 等待错误的 `stream` | 非 `owner` 推进 `producer termination` |
 | 并发后果 | 写入未完成时提前读取 | 等待不会再出现的 `barrier phase` |
 | 外部症状 | 随机 `gradient/weight NaN` | `GPU kernel` 永久 `hang` |
 
 > [!IMPORTANT]
-> `GPU` 并发代码中最关键的两个问题是：**谁真正生产了数据，以及谁拥有同步状态机。** 等待错误的 `producer` 会产生数据竞态；让错误的 `owner` 推进 `pipeline` 会产生永久等待。
+> `GPU` 并发代码中最关键的两个问题是：**谁真正生产数据，以及谁拥有同步状态机。** 等待错误的 `producer` 会产生数据竞态；让错误的 `owner` 推进 `pipeline` 会产生永久等待。
