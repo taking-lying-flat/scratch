@@ -1,12 +1,12 @@
-# `Packing`、`Padding-Free` 与 `FlashAttention Varlen`
+# `Packing`与 `FlashAttention Varlen`
 
 ## 1. Mental Model：物理连续，逻辑不连续
 
-`padding-free` 描述的是**LLM token 的物理布局**。传统 batch 把不同长度的样本补齐到统一宽度；padding-free 则删除这些补齐位置，只保留有效 token，并把它们紧凑地放进同一条 flat token stream。它减少的是 padding 对显存、带宽和算力的占用，本身并不定义 token 之间能否互相 attention
+- `padding-free` 描述的是**LLM token 的物理布局**。传统 batch 把不同长度的样本补齐到统一宽度；padding-free 则删除这些补齐位置，只保留有效 token，并把它们紧凑地放进同一条 flat token stream。它减少的是 padding 对显存、带宽和算力的占用，本身并不定义 token 之间能否互相 attention
 
-`packing` 描述的是**完整样本如何组合**。它以模板编码后的 LLM token 数为长度，将若干条能够放入同一预算的 sample 组成一个 pack；packing 改变的是 DataLoader 一次交付哪些样本，不会把这些样本合并成一条新的训练语义；同一个 pack 中的 sample 仍是独立序列
+- `packing` 描述的是**完整样本如何组合**。它以模板编码后的 LLM token 数为长度，将若干条能够放入同一预算的 sample 组成一个 pack；packing 改变的是 DataLoader 一次交付哪些样本，不会把这些样本合并成一条新的训练语义；同一个 pack 中的 sample 仍是独立序列
 
-`FlashAttention varlen` 描述的是**kernel 如何解释连续的 Q/K/V 内存**。它不要求重新构造带 padding 的二维 batch，而是读取 `cu_seqlens`，为每个 logical sequence 恢复独立的起点和长度。同一块连续 buffer 因而可以承载多个彼此隔离的 attention problem
+- `FlashAttention varlen` 描述的是**kernel 如何解释连续的 Q/K/V 内存**。它不要求重新构造带 padding 的二维 batch，而是读取 `cu_seqlens`，为每个 logical sequence 恢复独立的起点和长度。同一块连续 buffer 因而可以承载多个彼此隔离的 attention problem
 
 > [!IMPORTANT]
 > padding-free 只建立物理连续性，`cu_seqlens` 才重新建立逻辑不连续性
