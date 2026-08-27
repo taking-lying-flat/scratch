@@ -94,8 +94,6 @@ Attention(A | B | C as one causal sequence)
 | `padding-free` | `collator` / 张量布局层 | 当前微批中的多条已编码序列 | 一条连续 `token stream` | 消除二维批次中的补齐位置，同时保留原序列边界 |
 | `FlashAttention varlen` | 注意力实现层 | 连续 `Q/K/V` 与边界元数据 | 连续输出 | 按边界执行多个彼此独立的注意力问题 |
 
-### 2.1 单独开启 `padding-free`
-
 如果不开启 `packing`，一个 `DataLoader batch` 可能直接是：
 
 ```text
@@ -109,8 +107,6 @@ batch[:] = [self.packing_row(batch)]
 ```
 
 于是三条序列被直接整理成一个物理行。
-
-### 2.2 同时开启 `packing`
 
 如果开启 `packing`，数据集先把样本组织为若干 `pack`。例如：
 
@@ -148,8 +144,6 @@ if self.packing and isinstance(batch[0], list):
 
 ## 3. `ms-swift` 的数据集层：`PackingDataset` 只产生组合关系
 
-### 3.1 数据管线在哪里接入 `PackingDataset`
-
 常规训练管线先用 `LazyLLMDataset` 包装非流式数据，再根据 `args.packing` 选择 `PackingDataset` 或 `IterablePackingDataset`：
 
 ```python
@@ -171,8 +165,6 @@ if args.packing:
 ```
 
 这说明装箱依据的是模板编码后的长度，而不是原始字符串长度。对纯文本，它对应最终的语言模型 `token` 数；对多模态，它需要反映视觉占位展开后最终进入语言主干的序列长度。管线入口见 [`sft.py`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/pipelines/train/sft.py#L125-L156)。
-
-### 3.2 两种装箱策略
 
 `calculate_matched_group()` 支持两种行为不同的策略：
 
@@ -209,8 +201,6 @@ A=700, B=600, C=300, D=400
 
 相关实现见 [`calculate_matched_group()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/dataset/packing.py#L16-L47)。
 
-### 3.3 `packed_idx` 才是这一层的主要产物
-
 非流式 `PackingDataset` 的关键过程是：
 
 ```text
@@ -232,13 +222,9 @@ def __getitem__(self, index):
 
 因此这一层没有生成 `Q/K/V`，也没有执行 `torch.cat(input_ids)`。它只把“一个数据集条目”从单个样本变成样本列表。完整实现见 [`PackingDataset`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/dataset/packing.py#L50-L134)。
 
-### 3.4 `packing_num_proc` 会影响组合边界
-
 非流式实现先把全量 `lengths` 划分给多个装箱进程，每个进程在自己的长度分片内生成 `packed_idx`。这意味着不同的 `packing_num_proc` 不只改变预处理并发度，也可能改变最终样本组合；不同进程的分片之间不会共同寻找长度互补的样本。
 
 对于要求严格保持全局顺序的 `sequential` 场景，源码注释建议使用 `packing_num_proc=1`。这属于数据顺序语义，不应与后面的注意力隔离混在一起。
-
-### 3.5 `packing_length`、`max_seqlen` 与总 `token` 数不是同一个值
 
 | 名称 | 所在层级 | 含义 |
 | --- | --- | --- |
@@ -249,8 +235,6 @@ def __getitem__(self, index):
 如果一个微批包含两个 `pack`，物理总长度可以大于单个 `packing_length`；但 `max_seqlen` 仍然只由其中最长的原始逻辑序列决定。不能把 `packing_length` 直接作为 `FlashAttention` 的 `max_seqlen`。
 
 ## 4. `ms-swift` 的批处理层：`packing_row()` 到底拼了什么
-
-### 4.1 `packing=True` 会启用 `padding_free`
 
 当前 `SFTConfig` 的检查逻辑为：
 
@@ -279,8 +263,6 @@ packing=True
 ```
 
 这是 `ms-swift` 当前实现选择的后端契约。参数检查见 [`sft_args.py`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/arguments/sft_args.py#L185-L196)。
-
-### 4.2 `packing_row()` 的字段级行为
 
 `packing_row()` 不是只处理 `input_ids`。它先收集所有样本字段，再按字段类型选择拼接方式：
 
@@ -324,8 +306,6 @@ if 'position_ids' not in packed:
 
 完整实现见 [`packing_row()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/base.py#L721-L742)。
 
-### 4.3 `_data_collator()` 如何把逻辑批次变成一个物理行
-
 当 `self.padding_free=True` 时：
 
 ```python
@@ -345,8 +325,6 @@ for key in ['input_ids', 'channel', ...]:
 
 这就是最终出现 `[1, total_tokens]` 的原因。物理 `batch dimension=1` 只描述张量布局，不代表逻辑序列数变成 1。
 
-### 4.4 为什么这条路径没有普通 `attention_mask`
-
 父类只有在 `not self.padding_free` 时才会根据 `seq_lens` 创建二维 `attention_mask`：
 
 ```python
@@ -360,8 +338,6 @@ if not self.padding_free and seq_lens:
 所以标准 `padding-free` 路径不会再构造一个 `[1, total_tokens]` 的全 1 掩码，也不会物化跨样本的块对角稠密掩码。它依赖 `position_ids/cu_seqlens` 进入变长注意力分支。相关逻辑见 [`_data_collator()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/base.py#L1909-L2024)。
 
 ## 5. 从 `position_ids` 生成 `FlashAttention` 边界
-
-### 5.1 `get_packed_seq_params()` 的实际输出
 
 `ms-swift` 的实现为：
 
@@ -421,8 +397,6 @@ def get_packed_seq_params(position_ids):
 [5, 3, 4]
 ```
 
-### 5.2 接口层与原生层的命名差异
-
 | 所在层 | 参数名 |
 | --- | --- |
 | `ms-swift/Transformers` 模型参数 | `cu_seq_lens_q`、`cu_seq_lens_k` |
@@ -441,16 +415,12 @@ flash_varlen_fn(
 )
 ```
 
-### 5.3 `position_ids` 与显式边界的两种入口
-
 新版本 `Transformers` 支持两种进入 `varlen` 的方式：
 
 1. 模型已经传入完整的 `cu_seq_lens_q/k` 和 `max_length_q/k`；
 2. 模型只传入能表示多段序列的 `position_ids`，由框架内部构造边界。
 
 框架内部的 `prepare_fa_kwargs_from_position_ids()` 使用每段序列共同的最小起始位置，而不是把起点硬编码为 0。这是为了兼容起始位置不为 0 的模型。它还明确通过 `cu_seqlens.diff()` 计算最长序列，因为多模态位置不一定是普通单调的一维编号。见 [`prepare_fa_kwargs_from_position_ids()`](https://github.com/huggingface/transformers/blob/36deb0b53ed0863f4b4dfdea23dcaec7f3df3701/src/transformers/modeling_flash_attention_utils.py#L458-L533)。
-
-### 5.4 必须同时维护的边界信息
 
 | 元数据 | 消费者 | 作用 |
 | --- | --- | --- |
@@ -464,8 +434,6 @@ flash_varlen_fn(
 > 只拼接 `input_ids` 而不按同一顺序拼接 `labels`、`loss_scale` 与位置元数据，会得到形状看似合法但训练语义已经错位的批次。
 
 ## 6. `Transformers` 桥接层：两条不同路径为什么都调用 `varlen`
-
-### 6.1 `_flash_attention_forward()` 有三个分支
 
 `Transformers` 的公共前向根据输入状态选择：
 
@@ -494,8 +462,6 @@ is_fa_with_varlen_kwargs = all(
 ```
 
 完整实现见 [`_flash_attention_forward()`](https://github.com/huggingface/transformers/blob/36deb0b53ed0863f4b4dfdea23dcaec7f3df3701/src/transformers/modeling_flash_attention_utils.py#L694-L830)。
-
-### 6.2 普通补齐批次：`unpad → varlen → pad`
 
 存在 `attention_mask` 时，输入仍是标准二维批次。例如：
 
@@ -527,8 +493,6 @@ padded Q/K/V
 ```
 
 这条路径的 `varlen` 是 `FlashAttention` 对普通补齐批次的内部优化，模型外部仍保持原来的二维批次布局。相关实现见 [`_get_unpad_data()` 与 `_upad_input()`](https://github.com/huggingface/transformers/blob/36deb0b53ed0863f4b4dfdea23dcaec7f3df3701/src/transformers/modeling_flash_attention_utils.py#L351-L455)。
-
-### 6.3 真正的 `padding-free`：已经紧凑，不再 `gather/scatter`
 
 `ms-swift` 的 `padding-free` 输入已经是：
 
@@ -562,8 +526,6 @@ out = flash_varlen_fn(
 
 输出仍按原来的连续 `token` 顺序排列，再被视图恢复为 `[1, total_tokens, num_heads, head_dim]`。这里不需要 `pad_fn`，因为调用前根本没有补齐位置。
 
-### 6.4 `position_ids` 不是注意力掩码
-
 `_is_packed_sequence()` 只用 `position_ids` 判断当前是否存在多段递增序列，并据此选择 `varlen` 分支。真正进入原生函数的隔离信息已经转换成 `cu_seqlens`。
 
 因此应准确区分：
@@ -579,9 +541,7 @@ causal=True
   → 表示“每条独立序列内部不能读取未来位置”
 ```
 
-## 7. `FlashAttention varlen` 的原生接口
-
-### 7.1 `Q/K/V` 的实际形状
+## 7. `FlashAttention varlen`：从原生接口到 `CUDA` 内核
 
 `flash_attn_varlen_func()` 接收：
 
@@ -601,8 +561,6 @@ cu_seqlens_q == cu_seqlens_k
 接口仍将 `Q` 和 `K/V` 的边界分开，是因为它还支持查询长度与键值长度不同的注意力。
 
 `num_kv_heads` 可以小于 `num_q_heads`。这对应 `MQA/GQA`：多个查询头共享较少的键值头，只要查询头数量能够被键值头数量整除。官方接口说明见 [`flash_attn_varlen_func()`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/flash_attn/flash_attn_interface.py#L1391-L1482)。
-
-### 7.2 边界参数逐项解释
 
 | 参数 | 示例 | 准确含义 |
 | --- | --- | --- |
@@ -636,8 +594,6 @@ max_seqlen_q == max(diff(cu_seqlens_q))
 max_seqlen_k == max(diff(cu_seqlens_k))
 ```
 
-### 7.3 `causal`、序列隔离与 `window_size` 是三件事
-
 | 约束 | 由谁决定 | 作用范围 |
 | --- | --- | --- |
 | 不同样本互不可见 | `cu_seqlens_q/k` | 逻辑序列之间 |
@@ -661,22 +617,7 @@ window_size = (4, 0)
 
 `window_size` 最终被拆为 `window_size_left/right` 传入原生内核。`softcap`、`alibi_slopes`、`dropout_p` 等参数也会沿同一调用链传递，但它们不负责恢复样本边界。
 
-原生包装层还包含一些与边界兼容、但不由 `packing` 产生的参数：
-
-| 参数 | 作用 | 与训练 `packing` 的关系 |
-| --- | --- | --- |
-| `dropout_p` | 控制注意力概率随机失活 | 每个逻辑注意力问题内部应用 |
-| `softmax_scale` | 指定注意力分数缩放 | 不改变逻辑边界 |
-| `softcap` | 对注意力分数做上界软限制 | 不改变逻辑边界 |
-| `alibi_slopes` | 添加按头或按批次的 `ALiBi` 偏置 | 必须与逻辑批次维匹配 |
-| `block_table` | 使用分页 `K/V` 存储 | 常规训练自注意力通常不使用 |
-| `leftpad_k` | 描述每条键值序列的左侧补齐偏移 | 标准 `padding-free self-attention` 通常为空 |
-| `seqused_k` | 指定每条键值序列实际使用的长度 | 可进一步限制 `K/V` 有效范围 |
-| `num_splits` | 控制部分前向调度策略 | 不提供样本边界 |
-
-公共 `flash_attn_varlen_func()` 主要暴露训练常用参数；更底层的 `_flash_attn_varlen_forward()` 再把 `window_size` 拆成左右两个标量，并携带 `block_table/leftpad_k/seqused_k/num_splits` 调用扩展模块。
-
-### 7.4 Python 到 CUDA 的调用链
+`dropout_p`、`softmax_scale`、`softcap`、`alibi_slopes` 等参数只改变每个逻辑注意力问题内部的计算；`block_table`、`leftpad_k`、`seqused_k` 与 `num_splits` 服务于分页存储、有效长度或调度，同样不提供样本边界。更底层的 `_flash_attn_varlen_forward()` 会把这些参数连同左右窗口一起传入扩展模块。
 
 ```text
 Transformers._flash_attention_forward
@@ -691,10 +632,6 @@ Transformers._flash_attention_forward
 
 Python 包装层会先确保 `q/k/v` 满足连续性要求，再把边界、最长序列、窗口和因果参数传入 `flash_attn_gpu.varlen_fwd`。入口见 [`_flash_attn_varlen_forward()`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/flash_attn/flash_attn_interface.py#L153-L180)。
 
-## 8. `FlashAttention` 内核如何读取逻辑边界
-
-### 8.1 C++ 入口先建立参数契约
-
 `mha_varlen_fwd()` 在启动内核前检查：
 
 | 检查项 | 要求 |
@@ -708,8 +645,6 @@ Python 包装层会先确保 `q/k/v` 满足连续性要求，再把边界、最�
 | `GQA/MQA` | `num_q_heads` 必须能被 `num_kv_heads` 整除 |
 
 完成检查后，`set_params_fprop()` 将 `cu_seqlens_q/k` 的设备指针、`max_seqlen_q/k`、头数、步长与窗口参数写入 `Flash_fwd_params`。见 [`flash_api.cpp`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/csrc/flash_attn/flash_api.cpp#L539-L653) 和 [参数设置](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/csrc/flash_attn/flash_api.cpp#L699-L720)。
-
-### 8.2 `BlockInfo` 从累计长度恢复起点与实际长度
 
 每个逻辑批次索引 `bidb` 都会构造一个 `BlockInfo`：
 
@@ -743,8 +678,6 @@ k_offset = sum_s_k * k_row_stride;
 
 这一步是“物理连续、逻辑隔离”的内核级实现，而不是概念类比。源码见 [`block_info.h`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/csrc/flash_attn/src/block_info.h#L12-L45)。
 
-### 8.3 查询块和键块都使用局部实际长度
-
 前向内核创建 `BlockInfo` 后，首先检查当前查询块是否已经超过本序列的 `actual_seqlen_q`：
 
 ```cpp
@@ -762,8 +695,6 @@ if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
 
 内核片段见 [`flash_fwd_kernel.h`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/csrc/flash_attn/src/flash_fwd_kernel.h#L87-L105)。
 
-### 8.4 输出为什么仍保持拼接顺序
-
 `out` 与 `q` 使用相同的逻辑起点。内核写回第 `bidb` 条序列时，同样通过 `q_offset()` 找到它在连续输出缓冲区中的位置。因此输出布局为：
 
 ```text
@@ -771,8 +702,6 @@ O = [O_A | O_B | O_C]
 ```
 
 标准 `padding-free` 路径只把它重新视为 `[1, total_tokens, ...]`，不会恢复成三行补齐张量。后续残差、`MLP` 与语言模型头继续按这条连续 `token` 维处理；需要逐样本语义的模块必须继续携带或正确使用边界。
-
-### 8.5 新版 `CuTe` 内核仍使用同一契约
 
 较新的 `FlashAttention CuTe` 实现中，`SeqlenInfoQK.create()` 同样执行：
 
@@ -786,8 +715,6 @@ seqlen_k = cu_seqlens_k[batch_idx + 1] - offset_k
 随后 `offset_batch_Q/K()` 通过这些值对 `ragged tensor` 做指针偏移。见 [`seqlen_info.py`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/flash_attn/cute/seqlen_info.py#L83-L190)。
 
 因此从经典 `FlashAttention-2` 到较新的 `CuTe/FlashAttention-4` 路径，`packing/padding-free` 所依赖的核心数据契约没有变化：连续 `Q/K/V` 加显式累计边界。
-
-### 8.6 反向传播继续使用同一组边界
 
 `FlashAttnVarlenFunc.forward()` 在需要梯度时，会连同 `q/k/v`、前向输出和 `softmax_lse` 一起保存 `cu_seqlens_q/k`。进入 `backward()` 后，原来的累计长度与 `max_seqlen_q/k` 被原样传给 `_flash_attn_varlen_backward()`：
 
@@ -823,7 +750,7 @@ _wrapped_flash_attn_varlen_backward(
 
 所以样本隔离不是只存在于前向。`dQ/dK/dV` 同样按照原逻辑序列边界计算并写回连续梯度缓冲区。源码见 [`FlashAttnVarlenFunc`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/flash_attn/flash_attn_interface.py#L914-L1015)。
 
-## 9. 从数据集到内核的逐阶段形状变化
+## 8. 从数据集到内核的逐阶段形状变化
 
 以下表格把同一个 `[A=5, B=3, C=4]` 示例贯穿到底：
 
@@ -840,27 +767,7 @@ _wrapped_flash_attn_varlen_backward(
 | CUDA 内核 | `BlockInfo(bidb)` | 起点与实际长度 | 相邻累计边界之差 |
 | 输出 | 连续隐藏状态 | `O_A|O_B|O_C` | 物理顺序不变 |
 
-完整链路为：
-
-```text
-raw sample
-  → template.encode
-  → encoded sample + length
-  → PackingDataset groups indices
-  → DataLoader returns one or more packs
-  → Template.data_collator flattens nested pack lists
-  → packing_row concatenates token-aligned fields
-  → _data_collator creates one physical row
-  → position reset points become cu_seqlens
-  → model computes packed Q/K/V
-  → Transformers selects flash_varlen_fn
-  → FlashAttention validates metadata
-  → BlockInfo offsets each logical sequence
-  → causal/window attention runs inside each slice
-  → output remains in the same packed token order
-```
-
-## 10. 因果语言模型的监督边界也必须同步处理
+## 9. 因果语言模型的监督边界也必须同步处理
 
 注意力隔离正确，不代表语言模型损失自然正确。标准因果语言模型会使用当前位置的输出预测下一个位置；物理拼接后，`A` 的最后一个位置紧邻 `B` 的第一个位置。
 
@@ -889,9 +796,7 @@ labels:
 | 注意力边界 | `cu_seqlens_q/k` | 不同样本互相读取隐藏状态 |
 | 监督边界 | 每条样本首位置的 `label=-100` | 前一条样本末尾预测后一条样本开头 |
 
-## 11. `Qwen2-VL`：多模态 `packing` 的完整路径
-
-### 11.1 装箱长度必须对应最终语言主干序列
+## 10. `Qwen2-VL`：多模态 `packing` 的完整路径
 
 多模态样本在原始数据中可能只有一个 `<image>` 标记，但它不会只占语言主干中的一个位置。`Qwen2VLTemplate._encode()` 先调用视觉处理器得到 `image_grid_thw/video_grid_thw`，再根据 `merge_size` 计算需要展开的视觉占位数量：
 
@@ -922,8 +827,6 @@ def _get_new_tokens(i):
 
 而不是原始文本长度，也不是视觉编码器内部未经合并的全部 `patch`。
 
-### 11.2 必须先逐样本计算 `mRoPE`，再执行拼接
-
 普通文本可以直接为每条样本生成 `0...L-1`。`Qwen2-VL` 的位置不仅包含文本顺序，还包含视觉时间、高度和宽度坐标。
 
 因此它重写 `packing_row()`：
@@ -952,8 +855,6 @@ sample C → get_rope_index(C)
 
 如果先把 `A/B/C` 当成一条长序列再计算 `mRoPE`，后一条样本会继承前一条样本的位置状态，逻辑边界已经丢失。
 
-### 11.3 为什么同时存在 `text_position_ids` 与 `mRoPE position_ids`
-
 模型的 `get_rope_index()` 返回多维位置。模板再调用：
 
 ```python
@@ -976,8 +877,6 @@ combined position planes
 
 因为 `_concat_text_position_ids()` 是逐样本调用的，每条样本的 `text_position_ids` 都独立从 0 开始。拼接后第一层自然携带完整逻辑边界。实现见 [`_concat_text_position_ids()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/base.py#L2343-L2347)。
 
-### 11.4 `_data_collator()` 将两种位置用途拆开
-
 多模态 `collator` 在父类完成拼接后执行：
 
 ```python
@@ -999,8 +898,6 @@ result.update(get_packed_seq_params(text_position_ids))
 
 对应实现见 [`Qwen2VLTemplate.packing_row()` 与 `_data_collator()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/templates/qwen.py#L459-L512)。
 
-### 11.5 不同 `Transformers` 版本怎样把文本边界送入注意力
-
 `Qwen2VLTemplate` 对新旧 `Transformers` 采用两种桥接方式：
 
 | 条件 | 边界传递方式 |
@@ -1020,8 +917,6 @@ def _flash_attention_forward(*args, **kwargs):
 
 新版本路径不再依赖运行时包装，而是在 `collator` 中直接生成显式累计长度。两条路径的终点仍然都是 `Transformers` 的 `padding-free varlen` 分支。
 
-### 11.6 视觉特征何时替换占位位置
-
 在训练前向前，`_post_encode()` 先得到文本 `embedding`，再调用 `_get_inputs_embeds_hf()` 运行视觉模块并把视觉特征写入相应占位位置：
 
 ```text
@@ -1034,8 +929,6 @@ packed input_ids
 ```
 
 这一步不改变已经建立的语言序列顺序和 `cu_seqlens`。视觉特征只是替换对应位置的向量；不同多模态样本在语言主干中仍由相同的累计长度隔离。相关入口见 [`_post_encode()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/templates/qwen.py#L440-L450)。
-
-### 11.7 多模态端到端链路
 
 ```text
 image / video / text
@@ -1059,7 +952,7 @@ image / video / text
 > [!IMPORTANT]
 > 这里被装箱的是最终进入语言主干的完整多模态序列。视觉编码器内部自己的 `patch sequence`、注意力实现和批处理方式属于另一条计算图，不能把语言主干的 `packing + FlashAttention varlen` 直接等同为视觉编码器也执行了相同装箱。
 
-## 12. 混合架构不能只检查全注意力层
+## 11. 混合架构不能只检查全注意力层
 
 如果模型除了标准全注意力，还包含沿序列传播状态的模块，那么这些模块也必须理解相同边界。典型对象包括：
 
@@ -1085,21 +978,6 @@ image / video / text
 
 > [!WARNING]
 > 命令行接受 `--packing true` 或 `--attn_impl flash_attn`，只证明配置检查通过；只有所有跨序列传播信息的模块都消费同一套边界，才能证明整个模型支持 `padding-free`。
-
-## 13. 最终理解
-
-整条机制可以按下面五层理解：
-
-| 层 | 做了什么 | 保留下来的关键信息 |
-| --- | --- | --- |
-| 模板编码 | 把原始文本或多模态输入变成最终语言序列 | 每条样本的 `input_ids/labels/length` |
-| `PackingDataset` | 根据长度选择样本组合 | 原始样本仍是独立对象 |
-| `padding-free collator` | 将多个对象拼成一个物理行 | 每条样本重置的位置和监督边界 |
-| `Transformers` | 将位置边界映射为原生变长参数 | `cu_seqlens/max_seqlen` |
-| `FlashAttention` | 按累计边界偏移指针并执行局部注意力 | 每条逻辑序列独立的起点与实际长度 |
-
-> [!TIP]
-> `packing` 决定“哪些完整样本一起进入一个数据项”；`padding-free` 决定“这些样本怎样连续存储”；`cu_seqlens` 决定“连续存储中的逻辑边界”；`FlashAttention varlen` 则让内核真正按照这些边界执行彼此独立的注意力。
 
 ## 源码版本
 
