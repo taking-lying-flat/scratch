@@ -10,7 +10,7 @@
 | 实际故障点 | `persistent_topk` 的 `multi-CTA radix barrier` |
 
 > [!CAUTION]
-> **根因**：`MTP + FULL CUDA Graph padding` 产生了负的 `per-token context length`。`persistent_topk` 将 `int32 -1` 作为 `uint32_t` 读取后得到 `UINT_MAX`，导致同一 `CTA group` 的 `leader` 和 `peer` 对是否进入 `multi-CTA radix path` 作出相反判断。`peer` 提前退出，`leader` 永久等待 `inter-CTA barrier`，最终表现为 `shm_broadcast timeout` 和 `EngineDeadError`
+> **根因**：`MTP + FULL CUDA Graph padding` 产生了负的 `per-token context length`。`persistent_topk` 将 `int32 -1` 作为 `uint32_t` 读取后得到 `UINT_MAX`，导致同一 `CTA group` 的 `leader` 和 `peer` 对是否进入 `multi-CTA radix path` 作出相反判断。`peer` 提前退出，`leader` 永久等待 `inter-CTA barrier`，最终表现为 `shm_broadcast timeout` 和 `EngineDeadError`。
 
 ## 目录
 
@@ -175,17 +175,17 @@ CUDA Graph padding slot
 
 ### 5. Inter-CTA barrier 永久等待
 
-`radix_topk` 进入后使用 `arrival_counter` 做 `inter-CTA barrier`。当前 `ctas_per_group=2`，所以 barrier 初始阶段需要两个 CTA 都到达，`target` 是 2
+`radix_topk` 进入后使用 `arrival_counter` 做 `inter-CTA barrier`。当前 `ctas_per_group=2`，所以 barrier 初始阶段需要两个 CTA 都到达，`target` 是 2。
 
-但现场 `cuda-gdb` 抓到的是 `arrival_counter=1`、`target_val=2`：只有 `leader CTA` 到达过，另一个 CTA 已经执行 `early return`。因为没有任何 CTA 再能把 counter 从 1 加到 2，所以 `leader` 永远 spin 在 `wait_ge()`，整个 kernel 永远不会 retire。GPU 因此显示接近 100% utilization，但几乎没有 memory activity；CPU 侧真正接触 GPU 结果的是 `async output-copy thread`，它一直卡在 `copy_event.synchronize()`，所以 `worker main thread` 看起来只是正常 idle 在 `zmq_poll`
+但现场 `cuda-gdb` 抓到的是 `arrival_counter=1`、`target_val=2`：只有 `leader CTA` 到达过，另一个 CTA 已经执行 `early return`。因为没有任何 CTA 再能把 counter 从 1 加到 2，所以 `leader` 永远 spin 在 `wait_ge()`，整个 kernel 永远不会 retire。GPU 因此显示接近 100% utilization，但几乎没有 memory activity；CPU 侧真正接触 GPU 结果的是 `async output-copy thread`，它一直卡在 `copy_event.synchronize()`，所以 `worker main thread` 看起来只是正常 idle 在 `zmq_poll`。
 
 > [!WARNING]
-> 调试现场的决定性证据是 `arrival_counter=1`、`target_val=2`：`leader CTA` 已到达 barrier，而已经 `early return` 的 `peer CTA` 永远不会再把计数器推进到 2
+> 调试现场的决定性证据是 `arrival_counter=1`、`target_val=2`：`leader CTA` 已到达 barrier，而已经 `early return` 的 `peer CTA` 永远不会再把计数器推进到 2。
 
 ## 修复建议
 
 > [!TIP]
-> 建议同时修复两层：`producer` 保证不产生负长度，`consumer` 则维护 `0 <= seq_len <= min(stride, max_seq_len)`，避免其他 `caller` 再次破坏 `kernel invariant`
+> 建议同时修复两层：`producer` 保证不产生负长度，`consumer` 则维护 `0 <= seq_len <= min(stride, max_seq_len)`，避免其他 `caller` 再次破坏 `kernel invariant`。
 
 ### Producer：禁止产生负 context length
 
