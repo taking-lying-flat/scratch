@@ -32,8 +32,6 @@ output memory       ├──── O_A ─────┼── O_B ──┼�
 
 `A_last` 与 `B_first` 在 flat memory 中相邻，只表示它们的地址连续，不表示二者具有语言模型意义上的前后继关系；kernel 对每个 `bidb` 分别取得 `cu_seqlens[bidb]` 与 `cu_seqlens[bidb + 1]`，由这两个累计偏移确定当前 Q/K/V slice，因此计算的是三次独立的 attention，输出再按原来的物理顺序连续写回
 
-这条路径包含三个不能混为一谈的约束
-
 - 物理布局
   - `input_ids`、`labels`、`position_ids` 等 token-aligned metadata 必须使用同一 flatten 顺序
   - Q/K/V 与输出仍共享一条长度为 `T` 的连续 token 轴
