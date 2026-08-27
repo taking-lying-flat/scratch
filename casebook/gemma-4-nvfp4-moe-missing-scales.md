@@ -105,18 +105,6 @@ NVFP4 是面向 NVIDIA Blackwell Tensor Core 的 4-bit 浮点量化格式。其�
 1100 -> -2.0    1101 -> -3.0    1110 -> -4.0    1111 -> -6.0
 ```
 
-设 `s` 为符号位，`e` 为两位无符号指数，`m` 为一位尾数，指数 bias 为 `1`。E2M1 的解码规则为：
-
-```math
-\operatorname{E2M1}(s,e,m)=(-1)^s
-\begin{cases}
-0.5m, & e=0 \\
-2^{e-1}(1+0.5m), & e>0
-\end{cases}
-```
-
-当 `e=0` 时，`m=0` 和 `m=1` 分别产生带符号零和 `0.5`；当 `e>0` 时，两位指数依次给出 `1、2、4` 的基准量级，一位尾数再区分每个量级内的两个可表示值
-
 vLLM 的 NVFP4 activation kernel 不使用手写分段公式选择 E2M1 编码，而是在 CUDA C++ 中调用 Blackwell PTX 转换指令。下面是 `csrc/libtorch_stable/quantization/fp4/nvfp4_utils.cuh` 中实际执行转换和打包的代码：
 
 ```cpp
