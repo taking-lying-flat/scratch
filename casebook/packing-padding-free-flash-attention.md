@@ -1,10 +1,8 @@
 # `Packing`、`Padding-Free` 与 `FlashAttention Varlen` 
 
-> 从 `ms-swift` 的数据装箱与批处理，一直追踪到 `Transformers` 桥接层和 `FlashAttention` 内核
 
 | 项目 | 内容 |
 | --- | --- |
-| 分析范围 | 常规 `ms-swift SFT/PT/RLHF` 的 `Transformers/FSDP` 路径，以及 `Qwen2-VL` 多模态模板 |
 | 核心问题 | 多条样本如何在物理上连续存储，同时在注意力语义上保持完全隔离 |
 | 数据侧入口 | `PackingDataset`、`Template.data_collator()`、`packing_row()` |
 | 模型侧入口 | `Transformers._flash_attention_forward()` |
