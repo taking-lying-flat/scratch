@@ -748,21 +748,6 @@ _wrapped_flash_attn_varlen_backward(
 )
 ```
 
-## 8. 从数据集到内核的逐阶段形状变化
-
-| 阶段 | 主要对象 | 形状 / 内容 | 边界保存位置 |
-| --- | --- | --- | --- |
-| 模板编码后 | 三个样本字典 | `A(5)`、`B(3)`、`C(4)` | 三个独立 Python 对象 |
-| `PackingDataset` | 样本索引组 | 例如 `[[A,B], [C]]` | 列表嵌套关系 |
-| 公共 `data_collator()` | 展开的样本列表 | `[A,B,C]` | 样本仍是独立字典 |
-| `packing_row()` | 拼接字段 | `A|B|C` | 每条样本的 `position_ids` 重置 |
-| `_data_collator()` | 张量批次 | `input_ids.shape=[1,12]` | `position_ids=[0..4|0..2|0..3]` |
-| 边界构造 | 累计长度 | `[0,5,8,12]` | `cu_seq_lens_q/k` |
-| `QKV projection` | 连续注意力输入 | `q.shape=[12,Hq,D]`、`k/v.shape=[12,Hkv,D]` | 边界作为额外参数传递 |
-| C++ 参数层 | `Flash_fwd_params` | 指针、步长、最大长度 | `cu_seqlens_q/k` 设备指针 |
-| CUDA 内核 | `BlockInfo(bidb)` | 起点与实际长度 | 相邻累计边界之差 |
-| 输出 | 连续隐藏状态 | `O_A|O_B|O_C` | 物理顺序不变 |
-
 ## 10. `Qwen2-VL`：多模态 `packing` 的完整路径
 
 多模态样本在原始数据中可能只有一个 `<image>` 标记，但它不会只占语言主干中的一个位置。`Qwen2VLTemplate._encode()` 先调用视觉处理器得到 `image_grid_thw/video_grid_thw`，再根据 `merge_size` 计算需要展开的视觉占位数量：
