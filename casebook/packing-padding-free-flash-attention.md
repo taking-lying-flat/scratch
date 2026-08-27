@@ -1,337 +1,250 @@
-# `Packing`、`Padding-Free` 与 `FlashAttention Varlen` 
+# `Packing`、`Padding-Free` 与 `FlashAttention Varlen`
 
+## 1. Mental Model：物理连续，逻辑不连续
 
-| 项目 | 内容 |
-| --- | --- |
-| 核心问题 | 多条样本如何在物理上连续存储，同时在注意力语义上保持完全隔离 |
-| 数据侧入口 | `PackingDataset`、`Template.data_collator()`、`packing_row()` |
-| 模型侧入口 | `Transformers._flash_attention_forward()` |
-| 内核侧入口 | `flash_attn_varlen_func()`、`mha_varlen_fwd()`、`BlockInfo` |
+`padding-free` 描述的是**LLM token 的物理布局**。传统 batch 把不同长度的样本补齐到统一宽度；padding-free 则删除这些补齐位置，只保留有效 token，并把它们紧凑地放进同一条 flat token stream。它减少的是 padding 对显存、带宽和算力的占用，本身并不定义 token 之间能否互相 attention
+
+`packing` 描述的是**完整样本如何组合**。它以模板编码后的 LLM token 数为长度，将若干条能够放入同一预算的 sample 组成一个 pack；packing 改变的是 DataLoader 一次交付哪些样本，不会把这些样本合并成一条新的训练语义；同一个 pack 中的 sample 仍是独立序列
+
+`FlashAttention varlen` 描述的是**kernel 如何解释连续的 Q/K/V 内存**。它不要求重新构造带 padding 的二维 batch，而是读取 `cu_seqlens`，为每个 logical sequence 恢复独立的起点和长度。同一块连续 buffer 因而可以承载多个彼此隔离的 attention problem
 
 > [!IMPORTANT]
-> `packing`、`padding-free` 和 `FlashAttention varlen` 分别工作在数据集层、批处理层和注意力内核层。三者组合后形成的是`物理连续、逻辑分段`的训练输入，而不是一条新的长语义序列
+> padding-free 只建立物理连续性，`cu_seqlens` 才重新建立逻辑不连续性
 
-## 1. 三条序列如何进入同一次前向
-
-假设当前有三条已经完成模板编码的序列：
-
-| 逻辑序列 | `input_ids` 长度 | 局部位置 |
-| --- | ---: | --- |
-| `A` | 5 | `0 1 2 3 4` |
-| `B` | 3 | `0 1 2` |
-| `C` | 4 | `0 1 2 3` |
-
-普通批处理会把它们补齐到相同宽度：
+假设 `A`、`B`、`C` 的 LLM token 长度分别为 5、3、4，packing 与 padding-free 得到的物理布局及其逻辑解释如下
 
 ```text
-A A A A A
-B B B PAD PAD
-C C C C PAD
+sample space        A: len=5        B: len=3       C: len=4
+packing plan        pack_0 = [A, B, C]
+
+physical offset     0              5        8             12
+                    │              │        │              │
+flat token memory   ├─ A A A A A ──┼─ B B B ┼─ C C C C ───┤
+position_ids        │  0 1 2 3 4   │  0 1 2 │  0 1 2 3   │
+cu_seqlens          └───────[ 0,       5,       8,      12 ]
+
+kernel view         bidb=0: Q/K/V[0:5]      → Attention(A)
+                    bidb=1: Q/K/V[5:8]      → Attention(B)
+                    bidb=2: Q/K/V[8:12]     → Attention(C)
+
+output memory       ├──── O_A ─────┼── O_B ──┼──── O_C ────┤
 ```
 
-`padding-free` 则把有效位置直接拼成一行：
+`A_last` 与 `B_first` 在 flat memory 中相邻，只表示它们的地址连续，不表示二者具有语言模型意义上的前后继关系；kernel 对每个 `bidb` 分别取得 `cu_seqlens[bidb]` 与 `cu_seqlens[bidb + 1]`，由这两个累计偏移确定当前 Q/K/V slice，因此计算的是三次独立的 attention，输出再按原来的物理顺序连续写回
 
-```text
-input_ids:
-A A A A A | B B B | C C C C
+这条路径包含三个不能混为一谈的约束
 
-position_ids:
-0 1 2 3 4 | 0 1 2 | 0 1 2 3
-
-physical shape:
-[1, 12]
-```
-
-边界随后被转换成：
-
-```text
-cu_seqlens_q = [0, 5, 8, 12]
-cu_seqlens_k = [0, 5, 8, 12]
-max_seqlen_q = 5
-max_seqlen_k = 5
-```
-
-经过 `embedding` 和 `QKV projection` 后，`FlashAttention` 收到的物理缓冲区仍然是连续的：
-
-```text
-Q = [Q_A | Q_B | Q_C]
-K = [K_A | K_B | K_C]
-V = [V_A | V_B | V_C]
-```
-
-但 `cu_seqlens` 将它解释为三个独立区间：
-
-| 逻辑序列 | `Q` 区间 | `K/V` 区间 |
-| --- | --- | --- |
-| `A` | `[0, 5)` | `[0, 5)` |
-| `B` | `[5, 8)` | `[5, 8)` |
-| `C` | `[8, 12)` | `[8, 12)` |
-
-因此实际语义是：
-
-```text
-Attention(A)
-Attention(B)
-Attention(C)
-```
-
-> [!CAUTION]
-> `position_ids` 重新从 0 开始，不会自行阻止跨样本注意力。真正把 `Q/K/V` 切成独立注意力问题的是 `cu_seqlens_q/k`；`position_ids` 在这里首先是生成边界的载体，同时还负责各样本自己的 `RoPE/mRoPE` 位置语义
-
-## 2. 三个概念必须分层理解
-
-| 机制 | 所在层级 | 输入 | 输出 | 核心职责 |
-| --- | --- | --- | --- | --- |
-| `packing` | 数据集 / 调度层 | 样本索引与编码后长度 | 若干样本索引组 | 决定哪些完整样本组成一个 `pack` |
-| `padding-free` | `collator` / 张量布局层 | 当前微批中的多条已编码序列 | 一条连续 `token stream` | 消除二维批次中的补齐位置，同时保留原序列边界 |
-| `FlashAttention varlen` | 注意力实现层 | 连续 `Q/K/V` 与边界元数据 | 连续输出 | 按边界执行多个彼此独立的注意力问题 |
-
-如果不开启 `packing`，一个 `DataLoader batch` 可能直接是：
-
-```text
-[A, B, C]
-```
-
-公共 `_data_collator()` 看到 `self.padding_free=True` 后调用：
-
-```python
-batch[:] = [self.packing_row(batch)]
-```
-
-于是三条序列被直接整理成一个物理行。
-
-如果开启 `packing`，数据集先把样本组织为若干 `pack`。例如：
-
-```text
-PackingDataset item 0 = [A, C]
-PackingDataset item 1 = [B, D]
-```
-
-当 `per_device_train_batch_size=2` 时，`DataLoader` 交给公共 `data_collator()` 的对象是两层列表：
-
-```text
-batch = [
-    [A, C],
-    [B, D],
-]
-```
-
-`Template.data_collator()` 会先执行：
-
-```python
-if self.packing and isinstance(batch[0], list):
-    batch = sum(batch, start=[])
-```
-
-列表因此变为：
-
-```text
-[A, C, B, D]
-```
-
-之后 `_data_collator()` 再通过 `packing_row()` 将四条序列物理拼接。源码见 [`Template.data_collator()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/base.py#L1714-L1737)。
+- 物理布局
+  - `input_ids`、`labels`、`position_ids` 等 token-aligned metadata 必须使用同一 flatten 顺序
+  - Q/K/V 与输出仍共享一条长度为 `T` 的连续 token 轴
+- 逻辑边界
+  - `cu_seqlens = [0, 5, 8, 12]` 把连续地址解释为 `[0, 5)`、`[5, 8)`、`[8, 12)`
+  - 每个区间拥有独立的 Q/K/V base pointer 与 actual sequence length
+- 序列内可见性
+  - `causal=True` 只在当前 `cu_seqlens` slice 内限制未来 token
+  - causal 规则不会推断 sample boundary，也不会修复错误的逻辑切片
 
 > [!NOTE]
-> `PackingDataset` 产生的 `pack` 边界不是注意力边界。真正的注意力边界仍然是每条原始样本的边界。一个微批可以包含多个 `pack`，公共 `data_collator()` 会将其展开，但每条样本各自重置的 `position_ids` 仍会生成完整的 `cu_seqlens`。
+> `position_ids` reset 可以作为构造边界的上游信号，但真正进入 varlen kernel 并隔离内存访问的是 `cu_seqlens`
 
-## 3. `ms-swift` 的数据集层：`PackingDataset` 只产生组合关系
+从数学语义看，这等价于 block-diagonal causal attention；从实现看，FlashAttention 不会物化 `[T, T]` block-diagonal mask，而是直接把每个 `bidb` 的 Q/K/V 地址重定位到对应 slice；若累计边界从 `[0, 5, 8, 12]` 变成 `[0, 5, 12]`，flat memory 没有发生任何变化，kernel 看到的逻辑问题却从 `A / B / C` 变成 `A / (B+C)`，causal attention 随后只会在这个已经合并的 slice 内正确执行
 
-常规训练管线先用 `LazyLLMDataset` 包装非流式数据，再根据 `args.packing` 选择 `PackingDataset` 或 `IterablePackingDataset`：
+## 2. ms-swift：Packing 与 Padding-Free 如何落地
+
+在 ms-swift 中，packing 与 padding-free 共用同一条 flat-token 实现，但两者介入的阶段不同：`padding_free` 直接把当前 DataLoader batch 中的完整 sample 压成一行；`packing` 则先根据编码后的长度重新规划 sample 组合，再把组合结果交给相同的 padding-free collator
+
+> [!IMPORTANT]
+> 在 ms-swift 中启用 `packing` 会同时启用 `padding_free`，两者都要求使用 FlashAttention 实现
+
+这个约束在参数初始化阶段直接执行；`packing=True` 会先设置 `padding_free=True`；如果 `attn_impl` 不属于 FlashAttention family，训练会在进入数据管线前抛出异常，而不是回退到 SDPA 或 eager attention
+
+```python
+def _check_padding_free(self):
+    if self.padding_free or self.packing:
+        if self.packing:
+            feature = 'packing'
+            self.padding_free = True
+        else:
+            feature = 'padding_free'
+
+        supported_impls = [
+            'flash_attn',
+            'flash_attention_2',
+            'flash_attention_3',
+            'flash_attention_4',
+        ]
+        if self.attn_impl not in supported_impls:
+            raise ValueError(
+                f'The "{feature}" feature requires '
+                'a flash attention implementation.'
+            )
+```
+
+原因不是 FlashAttention 单纯更快，而是 flatten 之后已经不存在传统的 `[B, S]` padded layout；attention 必须接收 sample boundary，把一条物理 token 轴重新解释成多个 varlen sequence；ms-swift 选择的执行 contract 就是 FlashAttention varlen
+
+非流式训练首先执行 `template.encode`。因此 packing 使用的长度不是原始文本字符数或 tokenizer 之前的估计值，而是模板处理结束后的 LLM token 长度；多模态样本也已经完成 LLM-visible 占位符展开
 
 ```python
 if not args.streaming and args.truncation_strategy != 'split':
-    dataset = LazyLLMDataset(dataset, template.encode, ...)
+    dataset = LazyLLMDataset(
+        dataset,
+        template.encode,
+        strict=args.strict,
+        random_state=args.data_seed,
+    )
 
 if args.packing:
-    packing_dataset_cls = (
-        IterablePackingDataset if args.streaming else PackingDataset
-    )
-    dataset = packing_dataset_cls(
+    dataset = PackingDataset(
         template,
         dataset,
         packing_length=args.packing_length,
         packing_num_proc=args.packing_num_proc,
         packing_strategy=args.packing_strategy,
-        ...,
+        ...
     )
 ```
 
-这说明装箱依据的是模板编码后的长度，而不是原始字符串长度。对纯文本，它对应最终的语言模型 `token` 数；对多模态，它需要反映视觉占位展开后最终进入语言主干的序列长度。管线入口见 [`sft.py`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/pipelines/train/sft.py#L125-L156)。
+`PackingDataset` 只解决“哪些完整 sample 放在一起”。它从 `dataset['lengths']` 建立 `(sample_index, encoded_length)`，在 `packing_length` 预算内生成 `packed_idx`，但不会在 dataset 层拼接 `input_ids`、构造 `position_ids` 或生成 Q/K/V
 
-`calculate_matched_group()` 支持两种行为不同的策略：
+- `binpack`
+  - 默认使用 best-fit-decreasing，提高每个 pack 的 token 填充率
+  - 允许改变 sample 的组合顺序
+- `sequential`
+  - 使用 order-preserving next-fit
+  - 若要求单一全局顺序，需要同时设置 `packing_num_proc=1`
 
 ```python
-if strategy == 'sequential':
-    # order-preserving next-fit
-    ...
+data = [
+    (i + offset, sum(length) if isinstance(length, list) else length)
+    for i, length in enumerate(lengths)
+]
 
-# default: best-fit-decreasing bin packing
-sequences = binpacking.to_constant_volume(
-    sequences,
+sequences, input_data = calculate_matched_group(
+    input_data,
     packing_length,
-    weight_pos=1,
+    is_finished=is_finished,
+    strategy=packing_strategy,
 )
-```
 
-| 策略 | 行为 | 是否保持输入顺序 | 一个典型结果 |
-| --- | --- | --- | --- |
-| `binpack` | 按长度寻找更合适的组合 | 不保证 | `A=700, C=300` 可以组成同一个 `pack` |
-| `sequential` | 维护一个开放 `pack`，下一个样本放不下时立即提交 | 保持 | 样本按原始顺序依次进入 `pack` |
-
-默认 `binpack` 不要求只能合并相邻样本。例如原始顺序为：
-
-```text
-A=700, B=600, C=300, D=400
-```
-
-它可以形成：
-
-```text
-[A, C] = 1000
-[B, D] = 1000
-```
-
-相关实现见 [`calculate_matched_group()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/dataset/packing.py#L16-L47)。
-
-非流式 `PackingDataset` 的关键过程是：
-
-```text
-dataset['lengths']
-  → (sample_index, sample_length)
-  → calculate_matched_group(...)
-  → packed_idx
-  → __getitem__ 返回一组原始样本
-```
-
-源码中的 `__getitem__()` 很直接：
-
-```python
 def __getitem__(self, index):
     sequence = self.packed_idx[index]
-    row = [self.dataset[i] for i in sequence]
-    return row
+    return [self.dataset[i] for i in sequence]
 ```
 
-因此这一层没有生成 `Q/K/V`，也没有执行 `torch.cat(input_ids)`。它只把“一个数据集条目”从单个样本变成样本列表。完整实现见 [`PackingDataset`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/dataset/packing.py#L50-L134)。
+> [!NOTE]
+> `PackingDataset` 内部保存的是 sample index list，`__getitem__()` 只按索引取回完整 sample；真正的 token 拼接发生在 collator
 
-非流式实现先把全量 `lengths` 划分给多个装箱进程，每个进程在自己的长度分片内生成 `packed_idx`。这意味着不同的 `packing_num_proc` 不只改变预处理并发度，也可能改变最终样本组合；不同进程的分片之间不会共同寻找长度互补的样本。
-
-对于要求严格保持全局顺序的 `sequential` 场景，源码注释建议使用 `packing_num_proc=1`。这属于数据顺序语义，不应与后面的注意力隔离混在一起。
-
-| 名称 | 所在层级 | 含义 |
-| --- | --- | --- |
-| `packing_length` | 数据集层 | 单个 `pack` 的目标容量，默认使用 `max_length` |
-| `max_seqlen_q/k` | 注意力层 | 当前调用中最长的一条逻辑序列长度 |
-| `total_q/total_k` | 注意力层 | 当前调用中所有逻辑序列的查询或键值 `token` 总数 |
-
-如果一个微批包含两个 `pack`，物理总长度可以大于单个 `packing_length`；但 `max_seqlen` 仍然只由其中最长的原始逻辑序列决定。不能把 `packing_length` 直接作为 `FlashAttention` 的 `max_seqlen`。
-
-## 4. `ms-swift` 的批处理层：`packing_row()` 到底拼了什么
-
-当前 `SFTConfig` 的检查逻辑为：
-
-```python
-if self.padding_free or self.packing:
-    if self.packing:
-        feature = 'packing'
-        self.padding_free = True
-    else:
-        feature = 'padding_free'
-
-    supported_impls = [
-        'flash_attn',
-        'flash_attention_2',
-        'flash_attention_3',
-        'flash_attention_4',
-    ]
-```
-
-所以当前常规 `ms-swift` 路径中：
+DataLoader 取出的一个 packing item 仍是 `List[Dict]`；`data_collator()` 先展开 batch 中的 pack list，随后只要 `padding_free=True`，就调用一次 `packing_row()`，把所有完整 sample 压成一个 packed row
 
 ```text
-packing=True
-  → padding_free=True
-  → attention implementation 必须属于 FlashAttention 系列
+encoded dataset
+  ├─ sample A: length=5
+  ├─ sample B: length=3
+  ├─ sample C: length=4
+  └─ sample D: length=6
+
+PackingDataset
+  ├─ pack 0: [A, C]
+  └─ pack 1: [B, D]
+
+data_collator
+  └─ [A, C, B, D]
+       → packing_row
+       → one flat row: [A | C | B | D]
 ```
 
-这是 `ms-swift` 当前实现选择的后端契约。参数检查见 [`sft_args.py`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/arguments/sft_args.py#L185-L196)。
-
-`packing_row()` 不是只处理 `input_ids`。它先收集所有样本字段，再按字段类型选择拼接方式：
-
-| 字段 | 处理方式 | 原因 |
-| --- | --- | --- |
-| `input_ids` | Python 列表顺序拼接 | 形成连续语言模型输入 |
-| `labels` | 与 `input_ids` 同序拼接 | 保持逐 `token` 监督对齐 |
-| `loss_scale` | 同序拼接 | 保持逐 `token` 权重对齐 |
-| 一维 `position_ids` | 同序拼接 | 保留每条样本的位置重置 |
-| 三维 `position_ids` | 沿最后一维 `torch.cat` | 支持多模态 `mRoPE` |
-| `token_type_ids` | 同序拼接 | 保持类型标记与 `token` 对齐 |
-| `mm_token_type_ids` | 沿最后一维 `torch.cat` | 保持多模态位置类型 |
-| `channel` | 保留为逐样本列表 | 后续按原样本归组 |
-| 图像、视频等多模态数据 | `_data_collator_mm_data()` 聚合 | 交给模板专用逻辑处理 |
-
-核心源码如下：
+对应的控制流非常短
 
 ```python
-for key in keys:
-    if key == 'position_ids' and is_3d_position_ids \
-            or key in {'mm_token_type_ids'}:
-        packed[key] = torch.cat([x.get(key) for x in row], dim=-1)
-    elif key in {
-        'input_ids', 'labels', 'loss_scale',
-        'position_ids', 'token_type_ids'
-    }:
-        packed[key] = sum((x.get(key) or [] for x in row), start=[])
-    elif key == 'channel':
-        packed[key] = [x.get(key) for x in row]
+def data_collator(self, batch, *, padding_to=None):
+    if self.packing and isinstance(batch[0], list):
+        batch = sum(batch, start=[])
+
+    return self._data_collator(batch, padding_to=padding_to)
+
+def _data_collator(self, batch, *, padding_to=None):
+    if self.padding_free:
+        batch[:] = [self.packing_row(batch)]
+        assert 'position_ids' in batch[0]
 ```
 
-若普通文本样本没有预先构造 `position_ids`，父类会根据每条样本的 `length` 分别生成局部位置：
+`packing_row()` 才执行 token 级 flatten。普通一维字段使用相同 sample 顺序拼接；三维 `position_ids` 与 `mm_token_type_ids` 沿最后一个 sequence dimension 拼接；缺少显式 `position_ids` 时，则为每条 sample 分别生成从 0 开始的局部位置
 
 ```python
-if 'position_ids' not in packed:
-    packed['position_ids'] = sum(
-        (list(range(x)) for x in length),
-        start=[],
-    )
+def packing_row(self, row):
+    packed = {}
+    length = [sample['length'] for sample in row]
+
+    for key in keys:
+        if key == 'position_ids' and is_3d_position_ids \
+                or key == 'mm_token_type_ids':
+            packed[key] = torch.cat(
+                [sample.get(key) for sample in row],
+                dim=-1,
+            )
+        elif key in {
+            'input_ids', 'labels', 'loss_scale',
+            'position_ids', 'token_type_ids',
+        }:
+            packed[key] = sum(
+                (sample.get(key) or [] for sample in row),
+                start=[],
+            )
+
+    if 'position_ids' not in packed:
+        packed['position_ids'] = sum(
+            (list(range(seq_len)) for seq_len in length),
+            start=[],
+        )
+
+    return packed
 ```
 
-完整实现见 [`packing_row()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/base.py#L721-L742)。
+> [!IMPORTANT]
+> `packing_row()` 的核心不是 concatenate，而是所有 token-aligned metadata 必须保持同一个 physical permutation
 
-当 `self.padding_free=True` 时：
+flatten 后总 token 数为 `T` 时，下列字段必须指向同一条 token 轴
 
-```python
-batch[:] = [self.packing_row(batch)]
-assert 'position_ids' in batch[0]
+- `len(input_ids) == T`
+- `len(labels) == T`
+- `len(loss_scale) == T`，字段存在时
+- `len(token_type_ids) == T`，字段存在时
+- `position_ids.shape[-1] == T`
+- `mm_token_type_ids.shape[-1] == T`，字段存在时
+
+packing 也不会自动创造 next-token loss boundary；ms-swift 在每条 sample 的编码阶段已经将首个 label 设为 `-100`，`packing_row()` 只是保留这些 sample-local ignore position；loss 执行 shift 后，前一条 sample 的最后一个 logit 对齐到的是下一条 sample 的 `-100`
+
+```text
+input_ids        A0 A1 A2 | B0 B1
+labels           -1 A1 A2 | -1 B1       # -1 表示 -100
+shifted target   A1 A2 -1 | B1 -1
+                         ↑
+                  A_last 不监督 B_first
 ```
 
-接着它只保留一个物理行，并将字段转换为张量：
+> [!NOTE]
+> pack boundary 只服务于数据组合，真正进入模型的是 sample boundary；即使一个 DataLoader batch 展开了多个 pack，各条 sample 仍必须分别重启局部位置并保留 loss boundary
 
-```python
-assert len(batch) == 1
-for key in ['input_ids', 'channel', ...]:
-    value = batch[0].get(key)
-    if value is not None:
-        result[key] = value if key == 'channel' else [value]
+## 3. Boundary：`position_ids` 如何编译成 `cu_seqlens`
+
+padding-free flatten 删除了原来的 batch dimension，因此下游不能再从 tensor shape 判断每条 sample 的起止位置；ms-swift 在拼接时保留 sample-local `position_ids`：每条文本 sample 分别从 0 开始计数，reset point 由此成为可编译的 boundary signal
+
+> [!IMPORTANT]
+> `position_ids` reset 只是边界的上游表示，真正交给 varlen attention 的执行元数据是累计边界 `cu_seqlens`
+
+```text
+flat token index   0 1 2 3 4 | 5 6 7 | 8 9 10 11
+position_ids       0 1 2 3 4 | 0 1 2 | 0 1  2  3
+reset index        0           5       8
+append total       0           5       8          12
+cu_seqlens         [0, 5, 8, 12]
+sequence lengths      5  3  4
+max_seqlen             5
 ```
 
-这就是最终出现 `[1, total_tokens]` 的原因。物理 `batch dimension=1` 只描述张量布局，不代表逻辑序列数变成 1。
+这里发生的是一次 metadata compilation，而不是 attention 计算；reset index 给出每条 sample 的物理起点，末尾追加 total token count 后，相邻累计值之差才得到各条 sample 的实际长度
 
-父类只有在 `not self.padding_free` 时才会根据 `seq_lens` 创建二维 `attention_mask`：
-
-```python
-if not self.padding_free and seq_lens:
-    result['attention_mask'] = [
-        torch.ones(seq_len, dtype=torch.int64)
-        for seq_len in seq_lens
-    ]
-```
-
-所以标准 `padding-free` 路径不会再构造一个 `[1, total_tokens]` 的全 1 掩码，也不会物化跨样本的块对角稠密掩码。它依赖 `position_ids/cu_seqlens` 进入变长注意力分支。相关逻辑见 [`_data_collator()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/base.py#L1909-L2024)。
-
-## 5. 从 `position_ids` 生成 `FlashAttention` 边界
-
-`ms-swift` 的实现为：
+ms-swift 的显式转换函数把 `position_id == 0` 当作 boundary sentinel，主要供需要单独 boundary carrier 的模板使用
 
 ```python
 def get_packed_seq_params(position_ids):
@@ -351,8 +264,8 @@ def get_packed_seq_params(position_ids):
             dtype=torch.int32,
         ),
     ])
-
     max_length = cu_seqlens.diff().max()
+
     return {
         'cu_seq_lens_q': cu_seqlens,
         'cu_seq_lens_k': cu_seqlens,
@@ -361,81 +274,66 @@ def get_packed_seq_params(position_ids):
     }
 ```
 
-源码见 [`transformers_utils.py`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/utils/transformers_utils.py#L347-L363)。
-
-普通文本的父类 `collator` 不一定直接调用这个工具函数：它可以只把带重置的 `position_ids` 传给 `Transformers`，再由 `Transformers` 内部生成累计长度。部分多模态或模型专用路径则会在 `collator` 阶段直接调用 `get_packed_seq_params()`，把四个变长参数显式传给模型。两条路径最后生成的是同一种原生 `FlashAttention` 元数据。
-
-对下面的位置序列：
-
-```text
-0 1 2 3 4 | 0 1 2 | 0 1 2 3
-```
-
-所有 `position_id == 0` 的索引是：
-
-```text
-[0, 5, 8]
-```
-
-追加总长度 12 后得到：
-
-```text
-[0, 5, 8, 12]
-```
-
-相邻值的差重新给出三条逻辑序列的长度：
-
-```text
-[5, 3, 4]
-```
-
-| 所在层 | 参数名 |
-| --- | --- |
-| `ms-swift/Transformers` 模型参数 | `cu_seq_lens_q`、`cu_seq_lens_k` |
-| `FlashAttention` 原生函数 | `cu_seqlens_q`、`cu_seqlens_k` |
-
-二者描述的是同一组累计边界。`Transformers` 调用原生函数时会完成参数名映射：
+普通文本模型也可以把 reset 后的 `position_ids` 交给 Transformers 通用路径，由它在 `position_ids.min()` 的位置恢复边界。使用共同最小值而不是硬编码 0，是为了兼容合法起点不是 0 的位置编码
 
 ```python
-flash_varlen_fn(
-    q,
-    k,
-    v,
-    cu_seqlens_q=cu_seq_lens_q,
-    cu_seqlens_k=cu_seq_lens_k,
-    ...,
-)
+position_ids = position_ids.reshape(-1)
+indices_q = (position_ids == position_ids.min()).nonzero().view(-1)
+
+cu_seq_lens_q = torch.cat((
+    indices_q.to(dtype=torch.int32, device=position_ids.device),
+    torch.tensor(
+        position_ids.size(),
+        dtype=torch.int32,
+        device=position_ids.device,
+    ),
+))
+
+max_length_q = cu_seq_lens_q.diff().max()
 ```
 
-新版本 `Transformers` 支持两种进入 `varlen` 的方式：
+> [!NOTE]
+> 两条路径寻找 reset point 的方式不同，但最终都必须生成同一种 cumulative boundary contract
 
-1. 模型已经传入完整的 `cu_seq_lens_q/k` 和 `max_length_q/k`；
-2. 模型只传入能表示多段序列的 `position_ids`，由框架内部构造边界。
+累计边界必须同时满足以下关系
 
-框架内部的 `prepare_fa_kwargs_from_position_ids()` 使用每段序列共同的最小起始位置，而不是把起点硬编码为 0。这是为了兼容起始位置不为 0 的模型。它还明确通过 `cu_seqlens.diff()` 计算最长序列，因为多模态位置不一定是普通单调的一维编号。见 [`prepare_fa_kwargs_from_position_ids()`](https://github.com/huggingface/transformers/blob/36deb0b53ed0863f4b4dfdea23dcaec7f3df3701/src/transformers/modeling_flash_attention_utils.py#L458-L533)。
+- 边界数组
+  - dtype 为 `int32`
+  - 第一个值为 0，最后一个值等于对应 flat token 总数
+  - logical batch 为 `B` 时，数组长度为 `B + 1`
+  - 相邻值严格递增，每个差值是一条 sample 的实际长度
+- Q/K/V 对齐
+  - `q.shape[0] == cu_q[-1]`
+  - `k.shape[0] == v.shape[0] == cu_k[-1]`
+  - self-attention 通常要求 `cu_q == cu_k`
+  - cross-attention 可以有不同 Q/K 长度，但第 `b` 个 Q slice 与第 `b` 个 K/V slice 必须属于同一 sample
+- 最大长度
+  - `max_length_q` 来自 `diff(cu_q).max()`
+  - `max_length_k` 来自 `diff(cu_k).max()`
+  - 它们描述 launch 与 tile 调度上界，不承担 sample 分段语义
 
-| 元数据 | 消费者 | 作用 |
-| --- | --- | --- |
-| `position_ids` | `RoPE/mRoPE` | 为每条样本提供自己的局部位置坐标 |
-| `cu_seqlens_q/k` | `FlashAttention varlen` | 划分独立的 `Q/K/V` 区间 |
-| `max_seqlen_q/k` | `FlashAttention` 调度与边界处理 | 告知本次调用中最长逻辑序列的长度 |
-| `labels` | 因果语言模型损失 | 切断拼接边界上的错误预测目标 |
-| `loss_scale` | 加权损失 | 保持逐 `token` 权重与拼接顺序一致 |
+`cu_seqlens` 决定的是 logical batch、slice 起点与实际长度，`max_seqlen` 决定的是最长 slice 所需的执行上界。两者来自同一组边界，但不能互相替代
 
-> [!WARNING]
-> 只拼接 `input_ids` 而不按同一顺序拼接 `labels`、`loss_scale` 与位置元数据，会得到形状看似合法但训练语义已经错位的批次。
+## 4. Transformers：如何进入 Varlen
 
-## 6. `Transformers` 桥接层：两条不同路径为什么都调用 `varlen`
+Transformers 的公共 FlashAttention bridge 会根据输入 metadata 在三条互斥路径中选择；真正重要的不是配置里写了 `flash_attn`，而是 padding-free 输入最终必须命中 `flash_varlen_fn`
 
-`Transformers` 的公共前向根据输入状态选择：
+> [!IMPORTANT]
+> 选择 FlashAttention 只确定 kernel family，进入 varlen branch 才真正恢复 logical batch 并隔离 sample
 
-| 条件 | 使用的函数 | 前后处理 |
-| --- | --- | --- |
-| 存在二维 `attention_mask` | `flash_varlen_fn` | 先 `unpad`，计算后再 `pad` |
-| 已有显式边界，或 `position_ids` 表示多段序列 | `flash_varlen_fn` | 直接展平并计算，不做恢复补齐 |
-| 没有补齐，也没有多段边界 | 普通 `flash_fn` | 作为标准定长输入计算 |
+- padded batch
+  - 存在二维 `attention_mask`
+  - 先 `_upad_input()` 删除 padding，再调用 `flash_varlen_fn`
+  - 计算完成后由 `pad_fn()` 把输出散射回 padded shape
+- padding-free packed batch
+  - 没有二维 padding mask
+  - 显式提供完整的 `cu_seq_lens_q/k + max_length_q/k`，或提供可识别的 packed `position_ids`
+  - Q/K/V flatten 后直接调用 `flash_varlen_fn`，输出只做 view，不恢复 padding
+- dense no-padding batch
+  - 既没有 padding mask，也没有 boundary metadata
+  - 调用普通 `flash_fn`，整个 sequence dimension 被解释为一条序列
 
-源码中的判断为：
+Transformers 用 `all(...)` 检查四个显式 varlen 参数是否同时存在。只传 `cu_seq_lens_q/k` 而缺少 `max_length_q/k` 不会构成完整的显式 varlen contract
 
 ```python
 is_fa_with_position_ids = _is_packed_sequence(
@@ -443,337 +341,345 @@ is_fa_with_position_ids = _is_packed_sequence(
     batch_size=query_states.size(0),
 )
 is_fa_with_varlen_kwargs = all(
-    value is not None
-    for value in (
+    kwarg is not None
+    for kwarg in (
         cu_seq_lens_q,
         cu_seq_lens_k,
         max_length_q,
         max_length_k,
     )
 )
+
+if attention_mask is not None:
+    q, k, v, indices_q, cu_lens, max_lens = _upad_input(...)
+    out_unpad = flash_varlen_fn(q, k, v, ...)
+    out = pad_fn(out_unpad, indices_q, batch_size, query_length)
+
+elif is_fa_with_varlen_kwargs or is_fa_with_position_ids:
+    ...
+
+else:
+    out = flash_fn(query_states, key_states, value_states, ...)
 ```
 
-完整实现见 [`_flash_attention_forward()`](https://github.com/huggingface/transformers/blob/36deb0b53ed0863f4b4dfdea23dcaec7f3df3701/src/transformers/modeling_flash_attention_utils.py#L694-L830)。
-
-存在 `attention_mask` 时，输入仍是标准二维批次。例如：
+ms-swift padding-free 输入通常仍保留外层 shape `[1, T, H, D]`。当显式边界已经由 collator 准备好时，Transformers 只移除这个长度为 1 的伪 batch dimension，把三组状态变成原生 varlen API 需要的 `[T, H, D]`
 
 ```text
-hidden_states.shape = [3, 5, hidden_size]
-attention_mask =
-1 1 1 1 1
-1 1 1 0 0
-1 1 1 1 0
+query_states     [1, T_q, H_q, D] ── reshape ──► [T_q, H_q, D]
+key_states       [1, T_k, H_k, D] ── reshape ──► [T_k, H_k, D]
+value_states     [1, T_k, H_k, D] ── reshape ──► [T_k, H_k, D]
+                                                    │
+cu_q / cu_k ────────────────────────────────────────┤
+max_q / max_k ──────────────────────────────────────┤
+                                                    ▼
+                                          flash_varlen_fn
+                                                    │
+                                                    ▼
+output             [1, T_q, H_q, D] ◄─── view ─── [T_q, H_q, D]
 ```
-
-`_get_unpad_data()` 依次生成：
-
-| 产物 | 示例 | 用途 |
-| --- | --- | --- |
-| `seqlens_in_batch` | `[5, 3, 4]` | 每行有效长度 |
-| `indices` | 所有非补齐位置在展平矩阵中的索引 | 从补齐张量中抽取有效 `token` |
-| `cu_seqlens` | `[0, 5, 8, 12]` | 告诉 `varlen` 每条序列的边界 |
-| `max_seqlen_in_batch` | `5` | 传给内核的最长序列长度 |
-
-随后：
-
-```text
-padded Q/K/V
-  → index_first_axis 抽取有效 token
-  → compact Q/K/V
-  → flash_varlen_fn
-  → pad_fn 按 indices 散射回原二维形状
-```
-
-这条路径的 `varlen` 是 `FlashAttention` 对普通补齐批次的内部优化，模型外部仍保持原来的二维批次布局。相关实现见 [`_get_unpad_data()` 与 `_upad_input()`](https://github.com/huggingface/transformers/blob/36deb0b53ed0863f4b4dfdea23dcaec7f3df3701/src/transformers/modeling_flash_attention_utils.py#L351-L455)。
-
-`ms-swift` 的 `padding-free` 输入已经是：
-
-```text
-query_states.shape = [1, total_tokens, num_q_heads, head_dim]
-attention_mask = None
-```
-
-框架只需要把物理批次维压掉：
 
 ```python
-q = query_states.reshape(-1, query_states.size(-2), query_states.size(-1))
-k = key_states.reshape(-1, key_states.size(-2), key_states.size(-1))
-v = value_states.reshape(-1, value_states.size(-2), value_states.size(-1))
+elif is_fa_with_varlen_kwargs or is_fa_with_position_ids:
+    if cu_seq_lens_q is None or cu_seq_lens_k is None:
+        q, k, v, cu_lens, max_lens = _prepare_from_posids(
+            query_states,
+            key_states,
+            value_states,
+            position_ids,
+        )
+        (cu_seq_lens_q, cu_seq_lens_k) = cu_lens
+        (max_length_q, max_length_k) = max_lens
+    else:
+        q = query_states.reshape(-1, query_states.size(-2), query_states.size(-1))
+        k = key_states.reshape(-1, key_states.size(-2), key_states.size(-1))
+        v = value_states.reshape(-1, value_states.size(-2), value_states.size(-1))
+
+    out = flash_varlen_fn(
+        q,
+        k,
+        v,
+        cu_seqlens_q=cu_seq_lens_q,
+        cu_seqlens_k=cu_seq_lens_k,
+        **flash_kwargs(
+            max_seqlen_q=max_length_q,
+            max_seqlen_k=max_length_k,
+        ),
+    )
+    out = out.view(
+        query_states.size(0),
+        -1,
+        out.size(-2),
+        out.size(-1),
+    )
 ```
 
-然后直接调用：
+> [!NOTE]
+> direct padding-free 路径没有 `pad_fn()`，因此 varlen 输出的 token 顺序必须与输入 flat stream 完全一致
 
-```python
-out = flash_varlen_fn(
-    q,
-    k,
-    v,
-    cu_seqlens_q=cu_seq_lens_q,
-    cu_seqlens_k=cu_seq_lens_k,
-    max_seqlen_q=max_length_q,
-    max_seqlen_k=max_length_k,
-    ...,
-)
-```
+多维 mRoPE 的坐标可能重复或出现多个最小值，不适合让通用 `_is_packed_sequence(position_ids)` 猜测 sample boundary。此类模型应像 Qwen3.5 一样显式传入独立计算的 `cu/max`，让几何位置与序列分段保持正交
 
-输出仍按原来的连续 `token` 顺序排列，再被视图恢复为 `[1, total_tokens, num_heads, head_dim]`。这里不需要 `pad_fn`，因为调用前根本没有补齐位置。
+## 5. FlashAttention Kernel：从 Boundary 到地址域
 
-`_is_packed_sequence()` 只用 `position_ids` 判断当前是否存在多段递增序列，并据此选择 `varlen` 分支。真正进入原生函数的隔离信息已经转换成 `cu_seqlens`。
+FlashAttention varlen 不会先物化 `[T, T]` block-diagonal mask，再逐元素屏蔽跨样本访问；`cu_seqlens` 在 score 计算之前就参与 global-memory address rebasing，把 flat Q/K/V 划成多个具有独立 base pointer 与 extent 的地址域
 
-因此应准确区分：
+> [!IMPORTANT]
+> varlen 的第一层隔离是重新定位 Q/K/V 指针与张量长度，不是在全局 attention matrix 上补一层 mask
 
-```text
-position_ids reset
-  → 表示“这里可能开始一条新序列”
-
-cu_seqlens
-  → 表示“Q/K/V 的这两个下标之间是一条独立序列”
-
-causal=True
-  → 表示“每条独立序列内部不能读取未来位置”
-```
-
-## 7. `FlashAttention varlen`：从原生接口到 `CUDA` 内核
-
-`flash_attn_varlen_func()` 接收：
-
-| 参数 | 形状 | 含义 |
-| --- | --- | --- |
-| `q` | `[total_q, num_q_heads, head_dim]` | 所有逻辑查询序列的连续存储 |
-| `k` | `[total_k, num_kv_heads, head_dim]` | 所有逻辑键序列的连续存储 |
-| `v` | `[total_k, num_kv_heads, head_dim]` | 所有逻辑值序列的连续存储 |
-
-`total_q` 是所有查询 `token` 的总数，不是最长序列长度；`total_k` 同理。普通 `decoder-only self-attention` 通常满足：
-
-```text
-total_q == total_k
-cu_seqlens_q == cu_seqlens_k
-```
-
-接口仍将 `Q` 和 `K/V` 的边界分开，是因为它还支持查询长度与键值长度不同的注意力。
-
-`num_kv_heads` 可以小于 `num_q_heads`。这对应 `MQA/GQA`：多个查询头共享较少的键值头，只要查询头数量能够被键值头数量整除。官方接口说明见 [`flash_attn_varlen_func()`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/flash_attn/flash_attn_interface.py#L1391-L1482)。
-
-| 参数 | 示例 | 准确含义 |
-| --- | --- | --- |
-| `cu_seqlens_q` | `[0, 3, 8, 10]` | `Q` 中每条逻辑序列的累计边界 |
-| `cu_seqlens_k` | `[0, 3, 8, 10]` | `K/V` 中每条逻辑序列的累计边界 |
-| `max_seqlen_q` | `5` | 本次调用最长的查询序列长度 |
-| `max_seqlen_k` | `5` | 本次调用最长的键值序列长度 |
-
-对长度 `[3, 5, 2]`：
-
-```text
-q:
-| A A A | B B B B B | C C |
-
-index:
-0       3           8     10
-
-cu_seqlens_q:
-[0, 3, 8, 10]
-```
-
-必须始终成立：
-
-```text
-q.shape[0] == cu_seqlens_q[-1]
-k.shape[0] == cu_seqlens_k[-1]
-v.shape[0] == cu_seqlens_k[-1]
-len(cu_seqlens_q) == logical_batch_size + 1
-len(cu_seqlens_k) == logical_batch_size + 1
-max_seqlen_q == max(diff(cu_seqlens_q))
-max_seqlen_k == max(diff(cu_seqlens_k))
-```
-
-| 约束 | 由谁决定 | 作用范围 |
-| --- | --- | --- |
-| 不同样本互不可见 | `cu_seqlens_q/k` | 逻辑序列之间 |
-| 当前 `token` 不读取未来 `token` | `causal=True` | 每条逻辑序列内部 |
-| 当前 `token` 只读取有限邻域 | `window_size=(left, right)` | 每条逻辑序列内部 |
-
-例如：
-
-```text
-cu_seqlens = [0, 5, 8, 12]
-causal = True
-window_size = (4, 0)
-```
-
-其含义是：
-
-- `A/B/C` 先由 `cu_seqlens` 分成三条序列；
-- 每条序列内部使用因果方向；
-- 每个查询最多读取自己和左侧 4 个位置；
-- 窗口不会跨越 `A/B/C` 的边界。
-
-`window_size` 最终被拆为 `window_size_left/right` 传入原生内核。`softcap`、`alibi_slopes`、`dropout_p` 等参数也会沿同一调用链传递，但它们不负责恢复样本边界。
-
-`dropout_p`、`softmax_scale`、`softcap`、`alibi_slopes` 等参数只改变每个逻辑注意力问题内部的计算；`block_table`、`leftpad_k`、`seqused_k` 与 `num_splits` 服务于分页存储、有效长度或调度，同样不提供样本边界。更底层的 `_flash_attn_varlen_forward()` 会把这些参数连同左右窗口一起传入扩展模块。
-
-```text
-Transformers._flash_attention_forward
-  → flash_attn_varlen_func
-  → FlashAttnVarlenFunc.apply
-  → _flash_attn_varlen_forward
-  → flash_attn_gpu.varlen_fwd
-  → C++ mha_varlen_fwd
-  → set_params_fprop
-  → CUDA forward kernel
-```
-
-Python 包装层会先确保 `q/k/v` 满足连续性要求，再把边界、最长序列、窗口和因果参数传入 `flash_attn_gpu.varlen_fwd`。入口见 [`_flash_attn_varlen_forward()`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/flash_attn/flash_attn_interface.py#L153-L180)。
-
-`mha_varlen_fwd()` 在启动内核前检查：
-
-| 检查项 | 要求 |
-| --- | --- |
-| `q/k/v` 精度 | `fp16` 或 `bf16`，且三者一致 |
-| `cu_seqlens_q/k` 类型 | `int32` |
-| 设备 | `q/k/v` 与累计长度位于设备侧 |
-| 连续性 | `q/k/v` 最后一维连续，累计长度张量连续 |
-| 逻辑批次 | `batch_size = cu_seqlens_q.numel() - 1` |
-| 头维 | 当前该入口要求不超过 256，且满足内核对齐条件 |
-| `GQA/MQA` | `num_q_heads` 必须能被 `num_kv_heads` 整除 |
-
-完成检查后，`set_params_fprop()` 将 `cu_seqlens_q/k` 的设备指针、`max_seqlen_q/k`、头数、步长与窗口参数写入 `Flash_fwd_params`。见 [`flash_api.cpp`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/csrc/flash_attn/flash_api.cpp#L539-L653) 和 [参数设置](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/csrc/flash_attn/flash_api.cpp#L699-L720)。
-
-每个逻辑批次索引 `bidb` 都会构造一个 `BlockInfo`：
+对 grid 中的 logical batch index `bidb`，`BlockInfo` 分别读取 Q 与 K 的累计起点，并通过相邻边界之差得到当前序列的实际长度。下面展开的是本文对应的训练分支，即 Q/K 使用 cumulative boundary，且没有 left padding 与 KV cache
 
 ```cpp
-sum_s_q = params.cu_seqlens_q[bidb];
-sum_s_k = params.cu_seqlens_k[bidb];
+template<bool Varlen = true>
+struct BlockInfo {
+    template<typename Params>
+    __device__ BlockInfo(const Params& params, const int bidb)
+        : sum_s_q(params.cu_seqlens_q[bidb])
+        , sum_s_k(params.cu_seqlens_k[bidb])
+        , actual_seqlen_q(
+              params.cu_seqlens_q[bidb + 1] - sum_s_q)
+        , actual_seqlen_k(
+              params.cu_seqlens_k[bidb + 1] - sum_s_k) {}
 
-actual_seqlen_q =
-    params.cu_seqlens_q[bidb + 1] - sum_s_q;
+    template<typename index_t>
+    __device__ index_t q_offset(
+            index_t batch_stride,
+            index_t row_stride,
+            int bidb) const {
+        return uint32_t(sum_s_q) * row_stride;
+    }
 
-actual_seqlen_k =
-    params.cu_seqlens_k[bidb + 1] - sum_s_k;
+    template<typename index_t>
+    __device__ index_t k_offset(
+            index_t batch_stride,
+            index_t row_stride,
+            int bidb) const {
+        return uint32_t(sum_s_k) * row_stride;
+    }
+};
 ```
 
-`sum_s_q` 和 `sum_s_k` 是当前逻辑序列在连续缓冲区中的起点；相邻边界之差是实际长度。
+累计 token offset 乘以 row stride 后，得到当前 logical sequence 在 global memory 中的基地址；kernel 随后用这个 base 与 `actual_seqlen` 构造局部 tensor view
 
-随后指针偏移为：
+```text
+flat Q/K/V memory
 
-```cpp
-q_offset = sum_s_q * q_row_stride;
-k_offset = sum_s_k * k_row_stride;
+0                   5             8                  12
+│                   │             │                   │
+├─────── A ─────────┼──── B ──────┼──────── C ────────┤
+│                   │             │                   │
+│ bidb=0            │ bidb=1      │ bidb=2            │
+│ base = ptr + 0*s  │ base=ptr+5*s│ base = ptr + 8*s  │
+│ extent = 5        │ extent = 3  │ extent = 4        │
 ```
 
-对 `[0, 5, 8, 12]`：
+```cpp
+Tensor mQ = make_tensor(
+    make_gmem_ptr(
+        reinterpret_cast<Element*>(params.q_ptr)
+        + binfo.q_offset(
+            params.q_batch_stride,
+            params.q_row_stride,
+            bidb)),
+    make_shape(binfo.actual_seqlen_q, params.h, params.d),
+    make_stride(params.q_row_stride, params.q_head_stride, _1{})
+);
 
-| `bidb` | `sum_s_q` | `actual_seqlen_q` | `q_offset` 指向 |
-| ---: | ---: | ---: | --- |
-| 0 | 0 | 5 | `A` 的第一个查询 |
-| 1 | 5 | 3 | `B` 的第一个查询 |
-| 2 | 8 | 4 | `C` 的第一个查询 |
+Tensor mK = make_tensor(
+    make_gmem_ptr(
+        reinterpret_cast<Element*>(params.k_ptr)
+        + binfo.k_offset(
+            params.k_batch_stride,
+            params.k_row_stride,
+            bidb)),
+    make_shape(binfo.actual_seqlen_k, params.h_k, params.d),
+    make_stride(params.k_row_stride, params.k_head_stride, _1{})
+);
+```
 
-这一步是“物理连续、逻辑隔离”的内核级实现，而不是概念类比。源码见 [`block_info.h`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/csrc/flash_attn/src/block_info.h#L12-L45)。
+这一步同时确定了“从哪里开始读”和“最多有多少行可读”。Q/K tensor view 建立之后，kernel 才进一步决定当前 sequence 中哪些 tiles 真实存在
 
-前向内核创建 `BlockInfo` 后，首先检查当前查询块是否已经超过本序列的 `actual_seqlen_q`：
+- launch 范围
+  - `max_seqlen_q` 决定 grid 为最长 Q sequence 启动多少个 `m_block`
+- per-sequence Q 范围
+  - `actual_seqlen_q` 使短序列上多余的 Q block 立即退出
+- per-sequence K 范围
+  - `actual_seqlen_k` 给出当前 Q block 能枚举的 K block 上界
+- sequence-local visibility
+  - causal 或 local window 在当前 K tile 范围内继续收紧 `n_block_min/max`
 
 ```cpp
+const int num_m_block =
+    (params.seqlen_q + kBlockM - 1) / kBlockM;
+
 if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
+
+int n_block_max = cute::ceil_div(
+    binfo.actual_seqlen_k,
+    kBlockN
+);
+
+if (Is_causal || Is_local) {
+    n_block_max = std::min(
+        n_block_max,
+        cute::ceil_div(
+            (m_block + 1) * kBlockM
+                + binfo.actual_seqlen_k
+                - binfo.actual_seqlen_q
+                + params.window_size_right,
+            kBlockN
+        )
+    );
+}
 ```
 
-键块上界则根据 `actual_seqlen_k` 计算；若启用 `causal` 或局部窗口，还会继续收紧可访问的键块范围。
+> [!NOTE]
+> `cu_seqlens` 先定义 sequence address domain，`actual_seqlen` 再定义合法 tile domain，causal/window 最后只在该 domain 内限制可见性
 
-这意味着：
+输出写回复用 Q-side 的 `q_offset`，因此 `O` 与输入 Q 保持相同的 flat token ordering
 
-- `max_seqlen_q/k` 为启动和模板选择提供本批上界；
-- `actual_seqlen_q/k` 决定每条逻辑序列真正执行哪些块；
-- `sum_s_q/k` 决定这些块从连续缓冲区的哪个位置开始；
-- `causal/window` 只在当前逻辑切片内部收紧可见范围。
-
-内核片段见 [`flash_fwd_kernel.h`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/csrc/flash_attn/src/flash_fwd_kernel.h#L87-L105)。
-
-`out` 与 `q` 使用相同的逻辑起点。内核写回第 `bidb` 条序列时，同样通过 `q_offset()` 找到它在连续输出缓冲区中的位置。因此输出布局为：
-
-```text
-O = [O_A | O_B | O_C]
+```cpp
+Tensor mO = make_tensor(
+    make_gmem_ptr(
+        reinterpret_cast<Element*>(params.o_ptr)
+        + binfo.q_offset(
+            params.o_batch_stride,
+            params.o_row_stride,
+            bidb)),
+    make_shape(binfo.actual_seqlen_q, params.h, params.d),
+    make_stride(params.o_row_stride, params.o_head_stride, _1{})
+);
 ```
 
-标准 `padding-free` 路径只把它重新视为 `[1, total_tokens, ...]`，不会恢复成三行补齐张量。后续残差、`MLP` 与语言模型头继续按这条连续 `token` 维处理；需要逐样本语义的模块必须继续携带或正确使用边界。
+边界因而同时控制 Q/K/V 基地址、局部 tensor extent、Q tile 存在性、K tile 上界和 output placement；`causal=True` 只处理最后一层 sequence-local visibility，无法替代任何一层 boundary metadata
 
-较新的 `FlashAttention CuTe` 实现中，`SeqlenInfoQK.create()` 同样执行：
+## 6. Qwen3.5：LLM packing 与多模态边界
 
-```text
-offset_q = cu_seqlens_q[batch_idx]
-offset_k = cu_seqlens_k[batch_idx]
-seqlen_q = cu_seqlens_q[batch_idx + 1] - offset_q
-seqlen_k = cu_seqlens_k[batch_idx + 1] - offset_k
-```
+多模态 packing 关注的不是原始文本长度、图像分辨率、视频帧数或音频时长，而是各模态经过 encoder 与下采样后，**最终等价映射到 LLM 序列中的 token 数**。文本 token 直接占据 LLM position；图像、视频和音频则通过 `<|image_pad|>`、`<|video_pad|>` 与 `<|audio_pad|>` 等占位符，把下采样后的特征数量展开成对应数量的 LLM token 槽位
 
-随后 `offset_batch_Q/K()` 通过这些值对 `ragged tensor` 做指针偏移。见 [`seqlen_info.py`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/flash_attn/cute/seqlen_info.py#L83-L190)。
+> [!IMPORTANT]
+> packing 计数的是各模态占位符按下采样结果展开后，在 LLM 序列中实际占据的 token 数
 
-因此从经典 `FlashAttention-2` 到较新的 `CuTe/FlashAttention-4` 路径，`packing/padding-free` 所依赖的核心数据契约没有变化：连续 `Q/K/V` 加显式累计边界。
+当前 ms-swift 的 Qwen3.5 模板处理 image 与 video，因此实际参与这条路径的是 `<|image_pad|>` 和 `<|video_pad|>`；`<|audio_pad|>` 使用相同的长度映射原则，但属于支持音频输入的其他多模态模板
 
-`FlashAttnVarlenFunc.forward()` 在需要梯度时，会连同 `q/k/v`、前向输出和 `softmax_lse` 一起保存 `cu_seqlens_q/k`。进入 `backward()` 后，原来的累计长度与 `max_seqlen_q/k` 被原样传给 `_flash_attn_varlen_backward()`：
+ms-swift 的非流式训练管线先用 `template.encode` 得到编码后的样本，再构造 `PackingDataset`：
 
 ```python
-ctx.save_for_backward(
-    q,
-    k,
-    v,
-    out,
-    softmax_lse,
-    cu_seqlens_q,
-    cu_seqlens_k,
-    rng_state,
-)
+if not args.streaming and args.truncation_strategy != 'split':
+    dataset = LazyLLMDataset(
+        dataset,
+        template.encode,
+        strict=args.strict,
+        random_state=args.data_seed,
+    )
 
-_wrapped_flash_attn_varlen_backward(
-    dout,
-    q,
-    k,
-    v,
-    out,
-    softmax_lse,
-    dq,
-    dk,
-    dv,
-    cu_seqlens_q,
-    cu_seqlens_k,
-    ctx.max_seqlen_q,
-    ctx.max_seqlen_k,
-    ...,
-)
+if args.packing:
+    dataset = PackingDataset(
+        template,
+        dataset,
+        packing_length=args.packing_length,
+        packing_strategy=args.packing_strategy,
+        ...
+    )
 ```
 
-## 10. `Qwen2-VL`：多模态 `packing` 的完整路径
-
-多模态样本在原始数据中可能只有一个 `<image>` 标记，但它不会只占语言主干中的一个位置。`Qwen2VLTemplate._encode()` 先调用视觉处理器得到 `image_grid_thw/video_grid_thw`，再根据 `merge_size` 计算需要展开的视觉占位数量：
+因此，`PackingDataset` 读取的 `lengths` 已经是模板编码后的长度。对 Qwen3.5，`Qwen3_5Template` 继承 `Qwen3VLTemplate._encode()`。图像处理器先产生 `image_grid_thw`，模板再根据 spatial merge 后的网格大小计算图像在 LLM 序列中应占多少个位置：
 
 ```python
-merge_length = processor.image_processor.merge_size ** 2
+merge_length = processor.image_processor.merge_size**2
 
 def _get_new_tokens(i):
-    token_len = media_grid_thw[i].prod() // merge_length
-    return [media_token] * token_len
+    if media_type == 'images':
+        token_len = media_grid_thw[i].prod() // merge_length
+        return [media_token] * token_len
+    else:
+        return splited_tokens[i]
+
+input_ids, labels, loss_scale, mm_mask = self._extend_tokens(
+    input_ids,
+    labels,
+    loss_scale,
+    idx_list,
+    _get_new_tokens,
+    mm_mask=mm_mask,
+)
 ```
 
-随后 `_extend_tokens()` 同时扩展：
+`_extend_tokens()` 用这组新 token 替换原来的单个媒体标记，并同步扩展所有 token-aligned metadata。视觉位置不参与语言建模监督，所以对应的 labels 被写成 `-100`；`mm_mask` 则标记这些位置属于多模态区域：
 
-- `input_ids`；
-- `labels`；
-- `loss_scale`；
-- 多模态位置掩码。
+```python
+new_tokens = get_new_tokens(i)
+token_len = len(new_tokens)
 
-实现见 [`Qwen2VLTemplate._encode()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/templates/qwen.py#L381-L426)。
-
-因此，多模态 `packing` 的长度对象是：
-
-```text
-最终 LLM-visible text token
-+ 最终 LLM-visible visual/video token position
-+ 模板特殊 token
+input_ids = (
+    input_ids[:idx + added_tokens_len]
+    + new_tokens
+    + input_ids[added_tokens_len + idx + 1:]
+)
+labels = (
+    labels[:idx + added_tokens_len]
+    + [-100] * token_len
+    + labels[added_tokens_len + idx + 1:]
+)
+mm_mask = (
+    mm_mask[:idx + added_tokens_len]
+    + [True] * token_len
+    + mm_mask[added_tokens_len + idx + 1:]
+)
 ```
 
-而不是原始文本长度，也不是视觉编码器内部未经合并的全部 `patch`。
+图像的 LLM-visible 长度由 `grid_thw.prod() // merge_size²` 决定；视频路径则直接使用 processor 展开后的 token group。两条路径都在 `PackingDataset` 分组之前完成，所以 packing 面对的是已经确定长度的完整多模态 LLM 序列
 
-普通文本可以直接为每条样本生成 `0...L-1`。`Qwen2-VL` 的位置不仅包含文本顺序，还包含视觉时间、高度和宽度坐标。
+> [!NOTE]
+> Packing 只重排 LLM token 序列，不处理视觉 encoder 内部的 patch 序列
 
-因此它重写 `packing_row()`：
+`PackingDataset` 只组合编码后的 sample index。它既不运行视觉 encoder，也不对 `pixel_values` 做 token flatten：
+
+```python
+def __getitem__(self, index):
+    sequence = self.packed_idx[index]
+    return [self.dataset[i] for i in sequence]
+```
+
+这一区分很重要。Qwen3.5 中至少存在两种不同的“序列”：
+
+- 视觉 encoder 内部处理的 patch / grid 序列
+- 视觉特征进入语言主干后占据的 LLM token 序列
+
+ms-swift 的 packing 针对第二种。模板在数据阶段只根据 grid metadata 预留正确数量的视觉 token 槽位；真正的视觉 embedding 在 forward 前才计算，并写入这些已经排好位置的槽位：
+
+```python
+input_ids = inputs['input_ids']
+inputs_embeds = base_model.model.embed_tokens(input_ids)
+
+inputs_embeds = self._get_inputs_embeds_hf(
+    inputs_embeds,
+    inputs,
+    model.visual,
+    self.processor,
+    model.config,
+)
+```
+
+`_get_inputs_embeds_hf()` 运行视觉模块后，根据 image/video token mask 执行 `masked_scatter`：
+
+```python
+image_embeds = visual(pixel_values, grid_thw=image_grid_thw)
+
+image_mask = (
+    input_ids == config.image_token_id
+).unsqueeze(-1).expand_as(inputs_embeds)
+
+inputs_embeds = inputs_embeds.masked_scatter(
+    image_mask,
+    image_embeds.to(inputs_embeds.dtype),
+)
+```
+
+这里的 scatter 只替换向量，不改变 token 数量和顺序。也就是说，多模态“先展开”准确地说是：先展开视觉特征在 LLM 序列中的位置，再按这个最终 LLM 长度 packing；实际视觉特征可以稍后生成，但其数量必须与预留的视觉 token 槽位严格一致
+
+> [!IMPORTANT]
+> mRoPE 表示多模态几何位置，独立的 text position plane 表示 sample boundary
+
+视觉位置展开后，每条样本仍需独立计算 mRoPE。Qwen 模板覆盖了 `packing_row()`，先对 pack 中的每条 sample 调用模型的 `get_rope_index()`，然后才交给父类沿 sequence 维拼接：
 
 ```python
 def packing_row(self, row):
@@ -782,118 +688,116 @@ def packing_row(self, row):
         sample_copy['input_ids'] = torch.tensor(
             sample_copy['input_ids']
         )[None]
+
+        if 'mm_token_type_ids' in sample_copy:
+            sample_copy['mm_token_type_ids'] = (
+                sample_copy['mm_token_type_ids'][None]
+            )
+
         sample.update(self._get_position_ids(sample_copy))
 
     return super().packing_row(row)
 ```
 
-顺序非常关键：
+`get_rope_index()` 返回三层 mRoPE 坐标，分别描述 temporal、height 和 width 这些坐标服务于 Q/K 的旋转位置编码，却不适合作为 sample boundary：视觉网格中的坐标可以重复，多个合法位置也可能同时等于 0。若直接在 mRoPE 上查找 reset 点，会把一条样本内部的视觉区域误切成多段
 
-```text
-sample A → get_rope_index(A)
-sample B → get_rope_index(B)
-sample C → get_rope_index(C)
-           ↓
-再沿 sequence 维拼接 A/B/C
-```
-
-如果先把 `A/B/C` 当成一条长序列再计算 `mRoPE`，后一条样本会继承前一条样本的位置状态，逻辑边界已经丢失。
-
-模型的 `get_rope_index()` 返回多维位置。模板再调用：
+因此，ms-swift 在每条样本的三层 mRoPE 前额外增加一层严格递增的文本顺序坐标：
 
 ```python
+@staticmethod
 def _concat_text_position_ids(position_ids):
     seq_len = position_ids.shape[-1]
     text_position_ids = torch.arange(
         seq_len,
         device=position_ids.device,
     ).expand(1, *position_ids.shape[1:])
-    return torch.concat([text_position_ids, position_ids], dim=0)
+
+    return torch.concat(
+        [text_position_ids, position_ids],
+        dim=0,
+    )
 ```
 
-这会在多维 `mRoPE` 位置前增加一层普通文本顺序位置：
+对单条样本，这个张量的四层含义是：
 
-```text
-combined position planes
-  ├── plane 0: text_position_ids
-  └── remaining planes: mRoPE T/H/W positions
-```
+- plane 0：`0, 1, 2, ...`
+  - sample-local sequence order
+  - packing 后用于恢复 sample boundary
+- planes 1..3：mRoPE coordinates
+  - plane 1：temporal
+  - plane 2：height
+  - plane 3：width
 
-因为 `_concat_text_position_ids()` 是逐样本调用的，每条样本的 `text_position_ids` 都独立从 0 开始。拼接后第一层自然携带完整逻辑边界。实现见 [`_concat_text_position_ids()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/base.py#L2343-L2347)。
-
-多模态 `collator` 在父类完成拼接后执行：
+因为 `_concat_text_position_ids()` 在拼接前逐 sample 执行，plane 0 会在每条样本开头重新从 0 计数；父类 `packing_row()` 沿最后一维拼接后，它自然成为完整的 boundary carrier；collator 随后将顺序坐标与 mRoPE 坐标重新拆开：
 
 ```python
 position_ids = result['position_ids']
+
 result['position_ids'] = position_ids[1:]
-result['text_position_ids'] = text_position_ids = position_ids[0]
+result['text_position_ids'] = (
+    text_position_ids
+) = position_ids[0]
 
-result.update(get_packed_seq_params(text_position_ids))
+result.update(
+    get_packed_seq_params(text_position_ids)
+)
 ```
 
-于是：
-
-| 输出字段 | 后续用途 |
-| --- | --- |
-| `position_ids` | 交给语言主干，对 `Q/K` 应用多维 `mRoPE` |
-| `text_position_ids` | 标出每条多模态样本从哪里重新开始 |
-| `cu_seq_lens_q/k` | 交给 `FlashAttention varlen` 隔离不同样本 |
-| `max_length_q/k` | 提供最长逻辑多模态序列长度 |
-
-对应实现见 [`Qwen2VLTemplate.packing_row()` 与 `_data_collator()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/templates/qwen.py#L459-L512)。
-
-`Qwen2VLTemplate` 对新旧 `Transformers` 采用两种桥接方式：
-
-| 条件 | 边界传递方式 |
-| --- | --- |
-| `Transformers >= 4.53.0.dev` | `collator` 调用 `get_packed_seq_params(text_position_ids)`，显式加入 `cu_seq_lens_q/k` 和 `max_length_q/k` |
-| 更早版本 | `forward_context()` 临时包装模型模块的 `_flash_attention_forward`，把 `text_position_ids` 注入 `position_ids` 参数 |
-
-旧版本路径的核心包装为：
-
-```python
-def _flash_attention_forward(*args, **kwargs):
-    kwargs['position_ids'] = position_ids
-    return original_flash_attention_forward(*args, **kwargs)
-```
-
-其目的不是修改 `mRoPE`，而是确保旧模型实现调用 `FlashAttention` 时仍能看见用于分段的文本位置。上下文退出后，原始 `_flash_attention_forward` 会被恢复，避免永久修改模块函数。见 [`forward_context()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/templates/qwen.py#L428-L438) 与 [`_patch_flash_attention_forward()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/base.py#L2261-L2285)。
-
-新版本路径不再依赖运行时包装，而是在 `collator` 中直接生成显式累计长度。两条路径的终点仍然都是 `Transformers` 的 `padding-free varlen` 分支。
-
-在训练前向前，`_post_encode()` 先得到文本 `embedding`，再调用 `_get_inputs_embeds_hf()` 运行视觉模块并把视觉特征写入相应占位位置：
-
-```text
-packed input_ids
-  → text embedding
-  → visual encoder produces image/video embeddings
-  → image/video token mask locates placeholder positions
-  → masked_scatter replaces placeholders
-  → packed multimodal inputs_embeds
-```
-
-这一步不改变已经建立的语言序列顺序和 `cu_seqlens`。视觉特征只是替换对应位置的向量；不同多模态样本在语言主干中仍由相同的累计长度隔离。相关入口见 [`_post_encode()`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/templates/qwen.py#L440-L450)。
-
-```text
-image / video / text
-  → Qwen2VLTemplate._encode
-  → image_grid_thw / video_grid_thw
-  → visual placeholder expands to LLM-visible positions
-  → each sample has its final LLM sequence length
-  → PackingDataset groups complete multimodal samples
-  → Qwen2VLTemplate.packing_row
-  → get_rope_index runs separately for every sample
-  → text position plane + mRoPE T/H/W planes
-  → concatenate samples along sequence dimension
-  → _data_collator separates text_position_ids and mRoPE positions
-  → text_position_ids generate cu_seqlens
-  → _post_encode replaces visual placeholders with embeddings
-  → Q/K receive mRoPE
-  → FlashAttention varlen receives cu_seqlens
-  → different multimodal samples stay isolated
-```
+最终，`position_ids` 只保留三层 mRoPE，交给语言模型计算旋转位置；独立的 `text_position_ids` 用于生成 `cu_seq_lens_q/k` 与 `max_length_q/k`。几何位置与 attention boundary 因而具有不同的数据来源和消费者，不会因为视觉坐标的重复而互相干扰
 
 > [!IMPORTANT]
-> 这里被装箱的是最终进入语言主干的完整多模态序列。视觉编码器内部自己的 `patch sequence`、注意力实现和批处理方式属于另一条计算图，不能把语言主干的 `packing + FlashAttention varlen` 直接等同为视觉编码器也执行了相同装箱
-| `Transformers` | [`36deb0b53`](https://github.com/huggingface/transformers/tree/36deb0b53ed0863f4b4dfdea23dcaec7f3df3701) | `modeling_flash_attention_utils.py` |
-| `FlashAttention` | [`0251105a2`](https://github.com/Dao-AILab/flash-attention/tree/0251105a2fb19d2957484b7f023cd8c115286ced) | `flash_attn_interface.py`、`flash_api.cpp`、`block_info.h`、`seqlen_info.py` |
+> Qwen3.5 的同一组 sample boundaries 必须同时约束 full attention 与 linear attention
+
+Qwen3.5 不是只有 full attention。它的 decoder layer 根据 `layer_types` 在 `full_attention` 与 `linear_attention` 之间选择：
+
+```python
+if self.block_type == 'linear_attention':
+    hidden_states = self.linear_attn(
+        hidden_states=hidden_states,
+        attention_mask=attention_mask,
+        **kwargs,
+    )
+elif self.block_type == 'full_attention':
+    hidden_states, _ = self.self_attn(
+        hidden_states=hidden_states,
+        attention_mask=attention_mask,
+        **kwargs,
+    )
+```
+
+full-attention 层将 `cu_seq_lens_q/k` 传给 FlashAttention varlen；Gated DeltaNet 路径同样消费累计边界，并把它传给 recurrent/chunk kernel：
+
+```python
+core_attn_out, last_recurrent_state = (
+    torch_chunk_gated_delta_rule(
+        query,
+        key,
+        value,
+        g=g,
+        beta=beta,
+        initial_state=recurrent_state,
+        cu_seqlens=kwargs.pop(
+            'cu_seq_lens_q',
+            None,
+        ),
+        ...
+    )
+)
+```
+
+所以 Qwen3.5 的 boundary 不只隔离标准 attention 的 Q/K/V slice，也隔离线性层的递归状态。若边界丢失，full-attention 层会发生跨样本 attention，linear-attention 层则可能让后一条样本继承前一条样本的 state
+
+完整的数据顺序可以归纳为三个阶段：
+
+- 数据展开
+  - `template.encode` 处理 raw text / image / video
+  - media placeholder 展开为 LLM-visible token slots
+  - 每条 sample 的最终 LLM 长度在此确定
+- Packing 与位置构造
+  - `PackingDataset` 组合完整 sample
+  - 每条 sample 分别计算 mRoPE 与 text boundary plane
+  - 所有 token-aligned metadata 按相同顺序 flatten
+- 模型计算
+  - visual encoder 计算实际视觉 embedding
+  - `masked_scatter` 将其写入预留的视觉 token 槽位
+  - full attention 与 linear attention 消费同一组 sample boundaries
