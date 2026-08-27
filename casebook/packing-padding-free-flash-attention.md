@@ -9,9 +9,9 @@
 | 内核侧入口 | `flash_attn_varlen_func()`、`mha_varlen_fwd()`、`BlockInfo` |
 
 > [!IMPORTANT]
-> `packing`、`padding-free` 和 `FlashAttention varlen` 分别工作在数据集层、批处理层和注意力内核层。三者组合后形成的是“物理连续、逻辑分段”的训练输入，而不是一条新的长语义序列。
+> `packing`、`padding-free` 和 `FlashAttention varlen` 分别工作在数据集层、批处理层和注意力内核层。三者组合后形成的是`物理连续、逻辑分段`的训练输入，而不是一条新的长语义序列
 
-## 1. 先看完整结果：三条序列如何进入同一次前向
+## 1. 三条序列如何进入同一次前向
 
 假设当前有三条已经完成模板编码的序列：
 
@@ -75,14 +75,8 @@ Attention(B)
 Attention(C)
 ```
 
-而不是：
-
-```text
-Attention(A | B | C as one causal sequence)
-```
-
 > [!CAUTION]
-> `position_ids` 重新从 0 开始，不会自行阻止跨样本注意力。真正把 `Q/K/V` 切成独立注意力问题的是 `cu_seqlens_q/k`；`position_ids` 在这里首先是生成边界的载体，同时还负责各样本自己的 `RoPE/mRoPE` 位置语义。
+> `position_ids` 重新从 0 开始，不会自行阻止跨样本注意力。真正把 `Q/K/V` 切成独立注意力问题的是 `cu_seqlens_q/k`；`position_ids` 在这里首先是生成边界的载体，同时还负责各样本自己的 `RoPE/mRoPE` 位置语义
 
 ## 2. 三个概念必须分层理解
 
