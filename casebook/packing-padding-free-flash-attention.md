@@ -32,15 +32,11 @@ output memory       ├──── O_A ─────┼── O_B ──┼�
 
 `A_last` 与 `B_first` 在 flat memory 中相邻，只表示它们的地址连续，不表示二者具有语言模型意义上的前后继关系；kernel 对每个 `bidb` 分别取得 `cu_seqlens[bidb]` 与 `cu_seqlens[bidb + 1]`，由这两个累计偏移确定当前 Q/K/V slice，因此计算的是三次独立的 attention，输出再按原来的物理顺序连续写回
 
-- 物理布局
-  - `input_ids`、`labels`、`position_ids` 等 token-aligned metadata 必须使用同一 flatten 顺序
-  - Q/K/V 与输出仍共享一条长度为 `T` 的连续 token 轴
-- 逻辑边界
-  - `cu_seqlens = [0, 5, 8, 12]` 把连续地址解释为 `[0, 5)`、`[5, 8)`、`[8, 12)`
-  - 每个区间拥有独立的 Q/K/V base pointer 与 actual sequence length
-- 序列内可见性
-  - `causal=True` 只在当前 `cu_seqlens` slice 内限制未来 token
-  - causal 规则不会推断 sample boundary，也不会修复错误的逻辑切片
+三个约束相互独立
+
+- 物理布局；`input_ids`、`labels`、`position_ids` 等 token-aligned metadata 使用同一 flatten 顺序；Q/K/V 与输出共享长度为 `T` 的连续 token 轴
+- 逻辑边界；`cu_seqlens = [0, 5, 8, 12]` 把连续地址解释为 `[0, 5)`、`[5, 8)`、`[8, 12)`；每个区间拥有独立的 Q/K/V base pointer 与 actual sequence length
+- 序列内可见性；`causal=True` 只在当前 `cu_seqlens` slice 内限制未来 token；causal 规则不会推断 sample boundary 或修复错误切片
 
 > [!NOTE]
 > `position_ids` reset 可以作为构造边界的上游信号，但真正进入 varlen kernel 并隔离内存访问的是 `cu_seqlens`
@@ -104,12 +100,8 @@ if args.packing:
 
 `PackingDataset` 只解决“哪些完整 sample 放在一起”。它从 `dataset['lengths']` 建立 `(sample_index, encoded_length)`，在 `packing_length` 预算内生成 `packed_idx`，但不会在 dataset 层拼接 `input_ids`、构造 `position_ids` 或生成 Q/K/V
 
-- `binpack`
-  - 默认使用 best-fit-decreasing，提高每个 pack 的 token 填充率
-  - 允许改变 sample 的组合顺序
-- `sequential`
-  - 使用 order-preserving next-fit
-  - 若要求单一全局顺序，需要同时设置 `packing_num_proc=1`
+- `binpack`；默认使用 best-fit-decreasing，提高每个 pack 的 token 填充率；允许改变 sample 的组合顺序
+- `sequential`；使用 order-preserving next-fit；若要求单一全局顺序，需要同时设置 `packing_num_proc=1`
 
 ```python
 data = [
@@ -150,8 +142,6 @@ data_collator
        → packing_row
        → one flat row: [A | C | B | D]
 ```
-
-对应的控制流非常短
 
 ```python
 def data_collator(self, batch, *, padding_to=None):
@@ -221,7 +211,7 @@ shifted target   A1 A2 -1 | B1 -1
 ```
 
 > [!NOTE]
-> pack boundary 只服务于数据组合，真正进入模型的是 sample boundary；即使一个 DataLoader batch 展开了多个 pack，各条 sample 仍必须分别重启局部位置并保留 loss boundary
+> pack boundary 只服务于数据组合；进入模型的是 sample boundary；多个 pack 被 collator 展开后，各条 sample 仍分别重启局部位置并保留 loss boundary
 
 ## 3. Boundary：`position_ids` 如何编译成 `cu_seqlens`
 
@@ -295,22 +285,9 @@ max_length_q = cu_seq_lens_q.diff().max()
 
 累计边界必须同时满足以下关系
 
-- 边界数组
-  - dtype 为 `int32`
-  - 第一个值为 0，最后一个值等于对应 flat token 总数
-  - logical batch 为 `B` 时，数组长度为 `B + 1`
-  - 相邻值严格递增，每个差值是一条 sample 的实际长度
-- Q/K/V 对齐
-  - `q.shape[0] == cu_q[-1]`
-  - `k.shape[0] == v.shape[0] == cu_k[-1]`
-  - self-attention 通常要求 `cu_q == cu_k`
-  - cross-attention 可以有不同 Q/K 长度，但第 `b` 个 Q slice 与第 `b` 个 K/V slice 必须属于同一 sample
-- 最大长度
-  - `max_length_q` 来自 `diff(cu_q).max()`
-  - `max_length_k` 来自 `diff(cu_k).max()`
-  - 它们描述 launch 与 tile 调度上界，不承担 sample 分段语义
-
-`cu_seqlens` 决定的是 logical batch、slice 起点与实际长度，`max_seqlen` 决定的是最长 slice 所需的执行上界。两者来自同一组边界，但不能互相替代
+- 边界数组；dtype 为 `int32`；首值为 0；末值等于 flat token 总数；logical batch 为 `B` 时长度为 `B + 1`；相邻值严格递增
+- Q/K/V 对齐；`q.shape[0] == cu_q[-1]`；`k.shape[0] == v.shape[0] == cu_k[-1]`；self-attention 通常要求 `cu_q == cu_k`；cross-attention 的第 `b` 个 Q 与 K/V slice 必须属于同一 sample
+- 最大长度；`max_length_q = diff(cu_q).max()`；`max_length_k = diff(cu_k).max()`；它们只描述 launch 与 tile 上界，不承担 sample 分段语义
 
 ## 4. Transformers：如何进入 Varlen
 
@@ -319,17 +296,9 @@ Transformers 的公共 FlashAttention bridge 会根据输入 metadata 在三条�
 > [!IMPORTANT]
 > 选择 FlashAttention 只确定 kernel family，进入 varlen branch 才真正恢复 logical batch 并隔离 sample
 
-- padded batch
-  - 存在二维 `attention_mask`
-  - 先 `_upad_input()` 删除 padding，再调用 `flash_varlen_fn`
-  - 计算完成后由 `pad_fn()` 把输出散射回 padded shape
-- padding-free packed batch
-  - 没有二维 padding mask
-  - 显式提供完整的 `cu_seq_lens_q/k + max_length_q/k`，或提供可识别的 packed `position_ids`
-  - Q/K/V flatten 后直接调用 `flash_varlen_fn`，输出只做 view，不恢复 padding
-- dense no-padding batch
-  - 既没有 padding mask，也没有 boundary metadata
-  - 调用普通 `flash_fn`，整个 sequence dimension 被解释为一条序列
+- padded batch；存在二维 `attention_mask`；`_upad_input()` 删除 padding；`flash_varlen_fn` 完成计算；`pad_fn()` 将输出散射回 padded shape
+- padding-free packed batch；没有二维 padding mask；显式提供完整 `cu_seq_lens_q/k + max_length_q/k`，或提供可识别的 packed `position_ids`；Q/K/V flatten 后直接调用 `flash_varlen_fn`；输出只做 view
+- dense no-padding batch；没有 padding mask 或 boundary metadata；调用普通 `flash_fn`；整个 sequence dimension 被解释为一条序列
 
 Transformers 用 `all(...)` 检查四个显式 varlen 参数是否同时存在。只传 `cu_seq_lens_q/k` 而缺少 `max_length_q/k` 不会构成完整的显式 varlen contract
 
@@ -412,9 +381,7 @@ elif is_fa_with_varlen_kwargs or is_fa_with_position_ids:
 ```
 
 > [!NOTE]
-> direct padding-free 路径没有 `pad_fn()`，因此 varlen 输出的 token 顺序必须与输入 flat stream 完全一致
-
-多维 mRoPE 的坐标可能重复或出现多个最小值，不适合让通用 `_is_packed_sequence(position_ids)` 猜测 sample boundary。此类模型应像 Qwen3.5 一样显式传入独立计算的 `cu/max`，让几何位置与序列分段保持正交
+> direct padding-free 路径没有 `pad_fn()`；varlen 输出的 token 顺序必须与输入 flat stream 完全一致
 
 ## 5. FlashAttention Kernel：从 Boundary 到地址域
 
@@ -493,16 +460,12 @@ Tensor mK = make_tensor(
 );
 ```
 
-这一步同时确定了“从哪里开始读”和“最多有多少行可读”。Q/K tensor view 建立之后，kernel 才进一步决定当前 sequence 中哪些 tiles 真实存在
+Q/K tensor view 同时确定 base pointer 与可访问行数，之后才计算 tile 范围
 
-- launch 范围
-  - `max_seqlen_q` 决定 grid 为最长 Q sequence 启动多少个 `m_block`
-- per-sequence Q 范围
-  - `actual_seqlen_q` 使短序列上多余的 Q block 立即退出
-- per-sequence K 范围
-  - `actual_seqlen_k` 给出当前 Q block 能枚举的 K block 上界
-- sequence-local visibility
-  - causal 或 local window 在当前 K tile 范围内继续收紧 `n_block_min/max`
+- launch 范围；`max_seqlen_q` 决定 grid 为最长 Q sequence 启动多少个 `m_block`
+- per-sequence Q 范围；`actual_seqlen_q` 使短序列上多余的 Q block 立即退出
+- per-sequence K 范围；`actual_seqlen_k` 给出当前 Q block 能枚举的 K block 上界
+- sequence-local visibility；causal 或 local window 在当前 K tile 范围内继续收紧 `n_block_min/max`
 
 ```cpp
 const int num_m_block =
@@ -546,8 +509,6 @@ Tensor mO = make_tensor(
     make_stride(params.o_row_stride, params.o_head_stride, _1{})
 );
 ```
-
-边界因而同时控制 Q/K/V 基地址、局部 tensor extent、Q tile 存在性、K tile 上界和 output placement；`causal=True` 只处理最后一层 sequence-local visibility，无法替代任何一层 boundary metadata
 
 ## 6. Qwen3.5：LLM packing 与多模态边界
 
@@ -629,20 +590,10 @@ mm_mask = (
 > [!NOTE]
 > Packing 只重排 LLM token 序列，不处理视觉 encoder 内部的 patch 序列
 
-`PackingDataset` 只组合编码后的 sample index。它既不运行视觉 encoder，也不对 `pixel_values` 做 token flatten：
-
-```python
-def __getitem__(self, index):
-    sequence = self.packed_idx[index]
-    return [self.dataset[i] for i in sequence]
-```
-
-这一区分很重要。Qwen3.5 中至少存在两种不同的“序列”：
+Qwen3.5 中存在两种不同的序列
 
 - 视觉 encoder 内部处理的 patch / grid 序列
-- 视觉特征进入语言主干后占据的 LLM token 序列
-
-ms-swift 的 packing 针对第二种。模板在数据阶段只根据 grid metadata 预留正确数量的视觉 token 槽位；真正的视觉 embedding 在 forward 前才计算，并写入这些已经排好位置的槽位：
+- LLM token 序列；模板根据 grid metadata 预留视觉 token 槽位；packing 只处理这一层；视觉 embedding 在 forward 前计算并写回槽位
 
 ```python
 input_ids = inputs['input_ids']
@@ -697,7 +648,7 @@ def packing_row(self, row):
     return super().packing_row(row)
 ```
 
-`get_rope_index()` 返回三层 mRoPE 坐标，分别描述 temporal、height 和 width 这些坐标服务于 Q/K 的旋转位置编码，却不适合作为 sample boundary：视觉网格中的坐标可以重复，多个合法位置也可能同时等于 0。若直接在 mRoPE 上查找 reset 点，会把一条样本内部的视觉区域误切成多段
+`get_rope_index()` 返回 temporal、height 和 width 三层 mRoPE 坐标；这些坐标服务于 Q/K 的旋转位置编码，却不适合作为 sample boundary：视觉网格中的坐标可以重复，多个合法位置也可能同时等于 0；若直接查找 reset 点，会把样本内部的视觉区域误切成多段
 
 因此，ms-swift 在每条样本的三层 mRoPE 前额外增加一层严格递增的文本顺序坐标：
 
@@ -718,13 +669,8 @@ def _concat_text_position_ids(position_ids):
 
 对单条样本，这个张量的四层含义是：
 
-- plane 0：`0, 1, 2, ...`
-  - sample-local sequence order
-  - packing 后用于恢复 sample boundary
-- planes 1..3：mRoPE coordinates
-  - plane 1：temporal
-  - plane 2：height
-  - plane 3：width
+- plane 0；`0, 1, 2, ...`；表示 sample-local sequence order；packing 后用于恢复 sample boundary
+- planes 1..3；分别表示 temporal、height、width mRoPE coordinates
 
 因为 `_concat_text_position_ids()` 在拼接前逐 sample 执行，plane 0 会在每条样本开头重新从 0 计数；父类 `packing_row()` 沿最后一维拼接后，它自然成为完整的 boundary carrier；collator 随后将顺序坐标与 mRoPE 坐标重新拆开：
 
@@ -746,7 +692,7 @@ result.update(
 > [!IMPORTANT]
 > Qwen3.5 的同一组 sample boundaries 必须同时约束 full attention 与 linear attention
 
-Qwen3.5 不是只有 full attention。它的 decoder layer 根据 `layer_types` 在 `full_attention` 与 `linear_attention` 之间选择：
+Qwen3.5 decoder layer 根据 `layer_types` 在 `full_attention` 与 `linear_attention` 之间选择：
 
 ```python
 if self.block_type == 'linear_attention':
@@ -783,19 +729,10 @@ core_attn_out, last_recurrent_state = (
 )
 ```
 
-所以 Qwen3.5 的 boundary 不只隔离标准 attention 的 Q/K/V slice，也隔离线性层的递归状态。若边界丢失，full-attention 层会发生跨样本 attention，linear-attention 层则可能让后一条样本继承前一条样本的 state
+同一组 boundary 同时隔离 full-attention 的 Q/K/V slice 与 linear-attention 的递归状态；前者限定 attention domain，后者阻止 recurrent state 跨 sample 传播
 
-完整的数据顺序可以归纳为三个阶段：
+完整的数据顺序分为三个阶段
 
-- 数据展开
-  - `template.encode` 处理 raw text / image / video
-  - media placeholder 展开为 LLM-visible token slots
-  - 每条 sample 的最终 LLM 长度在此确定
-- Packing 与位置构造
-  - `PackingDataset` 组合完整 sample
-  - 每条 sample 分别计算 mRoPE 与 text boundary plane
-  - 所有 token-aligned metadata 按相同顺序 flatten
-- 模型计算
-  - visual encoder 计算实际视觉 embedding
-  - `masked_scatter` 将其写入预留的视觉 token 槽位
-  - full attention 与 linear attention 消费同一组 sample boundaries
+- 数据展开；`template.encode` 处理 raw text / image / video；media placeholder 展开为 LLM-visible token slots；确定每条 sample 的最终 LLM 长度
+- Packing 与位置构造；`PackingDataset` 组合完整 sample；逐 sample 计算 mRoPE 与 text boundary plane；所有 token-aligned metadata 按相同顺序 flatten
+- 模型计算；visual encoder 生成 embedding；`masked_scatter` 写入预留槽位；full attention 与 linear attention 消费同一组 sample boundaries
