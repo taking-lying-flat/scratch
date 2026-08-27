@@ -1,4 +1,4 @@
-# `Packing`、`Padding-Free` 与 `FlashAttention Varlen` 的完整数据链路
+# `Packing`、`Padding-Free` 与 `FlashAttention Varlen` 
 
 > 从 `ms-swift` 的数据装箱与批处理，一直追踪到 `Transformers` 桥接层和 `FlashAttention` 内核
 
