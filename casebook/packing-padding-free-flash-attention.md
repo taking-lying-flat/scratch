@@ -748,11 +748,7 @@ _wrapped_flash_attn_varlen_backward(
 )
 ```
 
-所以样本隔离不是只存在于前向。`dQ/dK/dV` 同样按照原逻辑序列边界计算并写回连续梯度缓冲区。源码见 [`FlashAttnVarlenFunc`](https://github.com/Dao-AILab/flash-attention/blob/0251105a2fb19d2957484b7f023cd8c115286ced/flash_attn/flash_attn_interface.py#L914-L1015)。
-
 ## 8. 从数据集到内核的逐阶段形状变化
-
-以下表格把同一个 `[A=5, B=3, C=4]` 示例贯穿到底：
 
 | 阶段 | 主要对象 | 形状 / 内容 | 边界保存位置 |
 | --- | --- | --- | --- |
@@ -766,35 +762,6 @@ _wrapped_flash_attn_varlen_backward(
 | C++ 参数层 | `Flash_fwd_params` | 指针、步长、最大长度 | `cu_seqlens_q/k` 设备指针 |
 | CUDA 内核 | `BlockInfo(bidb)` | 起点与实际长度 | 相邻累计边界之差 |
 | 输出 | 连续隐藏状态 | `O_A|O_B|O_C` | 物理顺序不变 |
-
-## 9. 因果语言模型的监督边界也必须同步处理
-
-注意力隔离正确，不代表语言模型损失自然正确。标准因果语言模型会使用当前位置的输出预测下一个位置；物理拼接后，`A` 的最后一个位置紧邻 `B` 的第一个位置。
-
-如果 `B` 的首个 `label` 没有被忽略，就会产生错误的：
-
-```text
-A_last → B_first
-```
-
-`ms-swift` 在每条样本独立编码完成时将该样本的第一个 `label` 设为 `-100`，`packing_row()` 随后按原样拼接所有 `labels`：
-
-```text
-tokens:
-A0 A1 A2 | B0 B1 B2
-
-labels:
--  A1 A2 | -  B1 B2
-```
-
-所以每条逻辑样本的开头都保留一个损失断点。相关处理见 [`base.py`](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/template/base.py#L1545-L1572)。
-
-这一点说明完整的 `padding-free` 正确性至少包含两套边界：
-
-| 边界 | 表示形式 | 防止的问题 |
-| --- | --- | --- |
-| 注意力边界 | `cu_seqlens_q/k` | 不同样本互相读取隐藏状态 |
-| 监督边界 | 每条样本首位置的 `label=-100` | 前一条样本末尾预测后一条样本开头 |
 
 ## 10. `Qwen2-VL`：多模态 `packing` 的完整路径
 
@@ -950,39 +917,6 @@ image / video / text
 ```
 
 > [!IMPORTANT]
-> 这里被装箱的是最终进入语言主干的完整多模态序列。视觉编码器内部自己的 `patch sequence`、注意力实现和批处理方式属于另一条计算图，不能把语言主干的 `packing + FlashAttention varlen` 直接等同为视觉编码器也执行了相同装箱。
-
-## 11. 混合架构不能只检查全注意力层
-
-如果模型除了标准全注意力，还包含沿序列传播状态的模块，那么这些模块也必须理解相同边界。典型对象包括：
-
-- `causal convolution`；
-- `linear attention`；
-- `gated delta rule`；
-- 状态空间递推；
-- 自定义 `sequence parallel`；
-- 任何跨序列位置聚合的后处理。
-
-例如把 `[A|B]` 直接交给不支持变长边界的 `causal convolution`，`B` 开头会读取 `A` 尾部。即使全注意力层已经正确调用 `FlashAttention varlen`，整个模型仍然存在跨样本污染。
-
-当前分析版本中的 `Qwen3.5` 特殊路径会：
-
-1. 从 `kwargs['cu_seq_lens_q']` 取得累计边界；
-2. 把边界传给变长 `causal_conv1d`；
-3. 把边界传给 `gated delta rule`；
-4. 当存在多条逻辑序列但相应变长内核不可用时，拒绝回退到忽略边界的普通实现。
-
-见 [内核选择约束](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/model/models/qwen.py#L1235-L1247)、[`causal_conv1d` 调用](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/model/models/qwen.py#L1250-L1259) 与 [`gated delta rule` 边界传递](https://github.com/taking-lying-flat/ms-swift/blob/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165/swift/model/models/qwen.py#L1336-L1381)。
-
-这给出一个更严格的支持标准：
-
-> [!WARNING]
-> 命令行接受 `--packing true` 或 `--attn_impl flash_attn`，只证明配置检查通过；只有所有跨序列传播信息的模块都消费同一套边界，才能证明整个模型支持 `padding-free`。
-
-## 源码版本
-
-| 项目 | 分析版本 | 关键源码 |
-| --- | --- | --- |
-| `ms-swift` | [`ed1b2f374`](https://github.com/taking-lying-flat/ms-swift/tree/ed1b2f3742296c4dbf1ddc553cb4ac43ea0c4165) | `packing.py`、`template/base.py`、`template/templates/qwen.py` |
+> 这里被装箱的是最终进入语言主干的完整多模态序列。视觉编码器内部自己的 `patch sequence`、注意力实现和批处理方式属于另一条计算图，不能把语言主干的 `packing + FlashAttention varlen` 直接等同为视觉编码器也执行了相同装箱
 | `Transformers` | [`36deb0b53`](https://github.com/huggingface/transformers/tree/36deb0b53ed0863f4b4dfdea23dcaec7f3df3701) | `modeling_flash_attention_utils.py` |
 | `FlashAttention` | [`0251105a2`](https://github.com/Dao-AILab/flash-attention/tree/0251105a2fb19d2957484b7f023cd8c115286ced) | `flash_attn_interface.py`、`flash_api.cpp`、`block_info.h`、`seqlen_info.py` |
