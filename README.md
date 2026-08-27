@@ -1,7 +1,3 @@
-# Scratch
-
-技术问题分析与调试记录。
-
 ## Casebook
 
 - [Packing、Padding-Free 与 FlashAttention Varlen 的完整数据链路](casebook/packing-flash-attention.md)
