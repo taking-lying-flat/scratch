@@ -4,55 +4,44 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#ffffff">
-  <meta name="description" content="从角频率、二维旋转矩阵到 Qwen3.5 的 partial RoPE：论文公式与 Transformers 源码的对应。">
-  <meta property="og:type" content="article">
-  <meta property="og:title" content="RoPE · Casebook">
-  <meta property="og:description" content="从角频率、旋转矩阵到 Transformers 实现。">
-  <meta property="og:url" content="https://taking-lying-flat.github.io/scratch/rope/">
+  <meta name="description" content="{{DESCRIPTION}}">
+  <meta property="og:type" content="{{TYPE}}">
+  <meta property="og:title" content="{{TITLE}}">
+  <meta property="og:description" content="{{DESCRIPTION}}">
+  <meta property="og:url" content="{{URL}}">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="RoPE · Casebook">
-  <meta name="twitter:description" content="论文公式与 Qwen3.5 源码的对应。">
-  <title>RoPE · Casebook</title>
-  <link rel="canonical" href="https://taking-lying-flat.github.io/scratch/rope/">
-  <link rel="stylesheet" href="../assets/fonts/index.css">
-  <link rel="stylesheet" href="../assets/math.css">
-  <link rel="stylesheet" href="../assets/reader.css">
-  <script src="../assets/reader.js" defer></script>
+  <title>{{TITLE}}</title>
+  <link rel="canonical" href="{{URL}}">
+  <link rel="icon" href="{{ROOT}}assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ROOT}}assets/fonts/index.css">
+  <link rel="stylesheet" href="{{ROOT}}assets/math.css">
+  <link rel="stylesheet" href="{{ROOT}}assets/reader.css">
+  <script src="{{ROOT}}assets/theme.js"></script>
+  <script src="{{ROOT}}assets/reader.js" defer></script>
 </head>
-<body>
-  <a class="skip-link" href="#article">跳转到正文</a>
-  <header class="topbar">
-    <a class="brand" href="../">CASEBOOK<span>技术笔记</span></a>
-    <div class="topbar-actions">
-      <a href="https://github.com/taking-lying-flat/scratch/blob/main/site/content/rope.md">查看源文</a>
-      <button type="button" id="print-button" hidden>打印 / PDF</button>
-    </div>
+<body id="top">
+  <a class="skip-link" href="#main">跳转到正文</a>
+  <header class="site-header">
+    <nav class="nav" aria-label="主导航">
+      <div class="logo">
+        <a href="{{ROOT}}">Casebook</a>
+        <button class="theme-toggle" type="button" aria-label="切换配色" title="切换配色" hidden>
+          <svg class="moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20.8 13.1A9 9 0 0 1 10.9 3.2a9 9 0 1 0 9.9 9.9Z"/></svg>
+          <svg class="sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+      </div>
+      <ul class="menu">
+        <li><a href="{{ROOT}}"{{POSTS_CURRENT}}>文章</a></li>
+        <li><a href="{{ROOT}}archives/"{{ARCHIVES_CURRENT}}>归档</a></li>
+        <li><a href="https://github.com/taking-lying-flat/scratch">GitHub <span aria-hidden="true">↗</span></a></li>
+      </ul>
+    </nav>
   </header>
-  <div class="reading-layout">
-    <aside class="sidebar">
-      <nav class="toc" aria-label="本章目录">
-        <p class="toc-label">本章内容</p>
-        <ol>{{TOC}}</ol>
-      </nav>
-      <a class="repository-link" href="https://github.com/taking-lying-flat/scratch">GitHub 仓库 ↗</a>
-    </aside>
-    <main id="article">
-      <header class="article-header">
-        <p class="eyebrow">QWEN3.5 <span>／</span> 位置编码</p>
-        <h1>RoPE</h1>
-        <p class="subtitle">从角频率、旋转矩阵到 Transformers 实现</p>
-      </header>
-      <details class="mobile-toc">
-        <summary>本章内容</summary>
-        <nav aria-label="移动端章节目录"><ol>{{TOC}}</ol></nav>
-      </details>
-      <article class="prose">{{CONTENT}}</article>
-      <footer class="article-footer">
-        <span>RoPE · Qwen3.5</span>
-        <a href="#article">返回顶部 ↑</a>
-      </footer>
-    </main>
-  </div>
+  <main class="main {{PAGE_CLASS}}" id="main">{{BODY}}</main>
+  <footer class="site-footer">
+    <span>© 2026 <a href="{{ROOT}}">Casebook</a></span>
+    <span>托管于 <a href="https://github.com/taking-lying-flat/scratch">GitHub Pages</a></span>
+  </footer>
   <p class="sr-only" id="copy-status" role="status" aria-live="polite"></p>
 </body>
 </html>

@@ -1,3 +1,21 @@
+const themeButton = document.querySelector('.theme-toggle');
+if (themeButton) {
+  const syncThemeLabel = () => {
+    const label = document.documentElement.dataset.theme === 'dark' ? '切换为浅色' : '切换为深色';
+    themeButton.setAttribute('aria-label', label);
+    themeButton.title = label;
+  };
+  themeButton.hidden = false;
+  syncThemeLabel();
+  themeButton.addEventListener('click', () => {
+    const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#1d1e20' : '#ffffff';
+    try { localStorage.setItem('casebook-theme', theme); } catch {}
+    syncThemeLabel();
+  });
+}
+
 const status = document.querySelector('#copy-status');
 if (navigator.clipboard?.writeText) {
   document.querySelectorAll('.copy-button').forEach((button) => {
@@ -18,36 +36,10 @@ if (navigator.clipboard?.writeText) {
 }
 
 const printButton = document.querySelector('#print-button');
-printButton.hidden = false;
-printButton.addEventListener('click', async () => {
-  await document.fonts.ready;
-  window.print();
-});
-
-const links = [...document.querySelectorAll('.toc a')];
-const sections = links.map((link) => document.querySelector(link.getAttribute('href')));
-let scheduled = false;
-function updateSection() {
-  let current = sections[0];
-  for (const section of sections) {
-    if (section.getBoundingClientRect().top <= 180) current = section;
-  }
-  for (const link of links) {
-    if (link.hash === `#${current.id}`) link.setAttribute('aria-current', 'location');
-    else link.removeAttribute('aria-current');
-  }
-  scheduled = false;
+if (printButton) {
+  printButton.hidden = false;
+  printButton.addEventListener('click', async () => {
+    await document.fonts.ready;
+    window.print();
+  });
 }
-addEventListener('scroll', () => {
-  if (!scheduled) {
-    scheduled = true;
-    requestAnimationFrame(updateSection);
-  }
-}, { passive: true });
-addEventListener('resize', updateSection);
-document.fonts.ready.then(updateSection);
-updateSection();
-
-document.querySelectorAll('.mobile-toc a').forEach((link) => {
-  link.addEventListener('click', () => { document.querySelector('.mobile-toc').open = false; });
-});

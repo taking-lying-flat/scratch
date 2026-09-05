@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile, copyFile, cp } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, copyFile, cp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import MarkdownIt from 'markdown-it';
@@ -53,7 +54,7 @@ let inlineCount = 0;
 let displayCount = 0;
 
 async function renderMath(token, display) {
-  const node = await document.convertPromise(token.content, { display, em: 18, ex: 8.1, containerWidth: 880 });
+  const node = await document.convertPromise(token.content, { display, em: 18, ex: 8.1, containerWidth: 780 });
   const html = adaptor.outerHTML(node);
   if (/data-mjx-error|data-mml-node="merror"/.test(html)) throw new Error(`Invalid formula: ${token.content}`);
   token.meta = { html };
@@ -101,25 +102,118 @@ markdown.renderer.rules.fence = (items, i) => {
   const code = hljs.getLanguage(language)
     ? hljs.highlight(token.content, { language, ignoreIllegals: false }).value
     : escape(token.content);
+  const label = { python: 'Python', json: 'JSON', text: 'Text' }[language] ?? language;
+  const lineCount = token.content.replace(/\n$/, '').split('\n').length;
+  const numbers = language === 'text' ? '' : `<span class="line-numbers" aria-hidden="true">${
+    Array.from({ length: lineCount }, (_, line) => line + 1).join('\n')
+  }</span>`;
   return `<figure class="code-block"${id ? ` id="${escape(id)}"` : ''}>
-    <figcaption><span>${name}</span><button type="button" class="copy-button" hidden>复制</button></figcaption>
-    <pre tabindex="0"><code class="language-${escape(language)}">${code}</code></pre>
+    <figcaption>
+      <span class="window-controls" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span class="window-title" title="${escape(name)}">${escape(name)}</span>
+      <span class="code-actions"><span class="code-language">${escape(label)}</span><button type="button" class="copy-button" hidden>复制</button></span>
+    </figcaption>
+    <pre tabindex="0">${numbers}<code class="language-${escape(language)}">${code}</code></pre>
   </figure>\n`;
 };
 
 const content = markdown.renderer.render(tokens, markdown.options, {});
-const toc = sections.map(({ id, label }, i) =>
-  `<li><a href="#${id}"><span class="toc-number">${String(i + 1).padStart(2, '0')}</span>${label}</a></li>`).join('\n');
+const toc = sections.map(({ id, label }) => `<li><a href="#${id}">${label}</a></li>`).join('\n');
 const template = await readFile(path.join(root, 'template.html'), 'utf8');
-const html = template.replaceAll('{{TOC}}', toc).replace('{{CONTENT}}', content);
-if (/\{\{(?:TOC|CONTENT)\}\}|\$`|data-mjx-error|language-math/.test(html)) throw new Error('Unrendered content in output');
+const siteUrl = 'https://taking-lying-flat.github.io/scratch/';
+const postPath = 'posts/rope/';
+const description = '从角频率、二维旋转矩阵到 Qwen3.5 的 partial RoPE：论文公式与 Transformers 源码的对应。';
+const proseText = tokens.filter((token) => token.type === 'inline').map((token) => token.content).join(' ');
+const readingMinutes = Math.max(1, Math.ceil(
+  (proseText.match(/\p{Script=Han}/gu)?.length ?? 0) / 300 +
+  (proseText.match(/[A-Za-z]+/g)?.length ?? 0) / 200 + displayCount * 0.3 + 2
+));
+const metadata = `<time datetime="2026-09-05">2026 年 9 月 5 日</time><span>约 ${readingMinutes} 分钟</span>`;
+const files = ['reader.css', 'reader.js', 'theme.js', 'favicon.svg'];
+const assetVersion = createHash('sha256');
+for (const file of files) assetVersion.update(await readFile(path.join(root, file)));
+const version = assetVersion.digest('hex').slice(0, 10);
 
+function page({ title, description, route = '', body, type = 'website', pageClass = '' }) {
+  const values = {
+    TITLE: escape(title), DESCRIPTION: escape(description), TYPE: type,
+    URL: `${siteUrl}${route}`, ROOT: '../'.repeat(route.split('/').filter(Boolean).length) || './',
+    POSTS_CURRENT: route === '' ? ' aria-current="page"' : '',
+    ARCHIVES_CURRENT: route === 'archives/' ? ' aria-current="page"' : '',
+    PAGE_CLASS: pageClass, BODY: body,
+  };
+  let html = template.replace(/\{\{([A-Z_]+)\}\}/g, (_, key) => {
+    if (!(key in values)) throw new Error(`Unknown template field: ${key}`);
+    return values[key];
+  });
+  for (const file of files) html = html.replaceAll(`assets/${file}"`, `assets/${file}?v=${version}"`);
+  if (/\{\{(?:TOC|CONTENT|BODY)\}\}|\$`|data-mjx-error|language-math/.test(html)) throw new Error('Unrendered content in output');
+  return html;
+}
+
+const article = page({
+  title: 'RoPE · Casebook', description, route: postPath, type: 'article', pageClass: 'post-page',
+  body: `<article class="post-single">
+    <header class="post-header">
+      <h1>RoPE</h1>
+      <p class="post-description">从角频率、旋转矩阵到 Qwen3.5 实现</p>
+      <div class="post-meta">${metadata}<span>taking-lying-flat</span></div>
+    </header>
+    <details class="toc">
+      <summary>目录</summary>
+      <nav aria-label="文章目录"><ol>${toc}</ol></nav>
+    </details>
+    <div class="prose">${content}</div>
+    <footer class="post-footer">
+      <div class="post-topics" aria-label="文章主题"><span>RoPE</span><span>Qwen3.5</span><span>Transformers</span></div>
+      <div class="post-actions">
+        <a href="https://github.com/taking-lying-flat/scratch/blob/main/site/content/rope.md">Markdown 源文 ↗</a>
+        <button type="button" id="print-button" hidden>打印 / PDF</button>
+        <a href="#top">返回顶部 ↑</a>
+      </div>
+      <a class="back-link" href="../../">← 全部文章</a>
+    </footer>
+  </article>`,
+});
+const home = page({
+  title: 'Casebook · 技术笔记', description: '关于模型、论文与源码的技术笔记。', pageClass: 'home-page',
+  body: `<header class="home-intro">
+    <h1>Casebook</h1>
+    <p>关于模型、论文与源码的笔记。</p>
+  </header>
+  <section aria-label="文章列表">
+    <article class="post-entry">
+      <h2><a href="${postPath}">RoPE</a></h2>
+      <p class="entry-description">从角频率、旋转矩阵到 Qwen3.5 实现</p>
+      <p class="entry-excerpt">${description}</p>
+      <footer class="entry-footer"><div class="post-meta">${metadata}</div><span class="entry-arrow" aria-hidden="true">→</span></footer>
+    </article>
+  </section>`,
+});
+const archives = page({
+  title: '归档 · Casebook', description: 'Casebook 技术笔记归档。', route: 'archives/', pageClass: 'archive-page',
+  body: `<header class="page-header"><h1>归档</h1><p>1 篇文章</p></header>
+    <section class="archive-year" aria-labelledby="year-2026">
+      <h2 id="year-2026">2026 <span>1</span></h2>
+      <div class="archive-month"><h3>九月</h3><article class="archive-entry">
+        <h4><a href="../${postPath}">RoPE</a></h4>
+        <p>从角频率、旋转矩阵到 Qwen3.5 实现</p>
+        <div class="post-meta">${metadata}</div>
+      </article></div>
+    </section>`,
+});
+
+await rm(output, { recursive: true, force: true });
+await mkdir(path.join(output, postPath), { recursive: true });
 await mkdir(path.join(output, 'rope'), { recursive: true });
+await mkdir(path.join(output, 'archives'), { recursive: true });
 await mkdir(path.join(output, 'assets'), { recursive: true });
-await writeFile(path.join(output, 'rope/index.html'), html);
+await writeFile(path.join(output, postPath, 'index.html'), article);
+await writeFile(path.join(output, 'index.html'), home);
+await writeFile(path.join(output, 'archives/index.html'), archives);
 await writeFile(path.join(output, 'assets/math.css'), adaptor.cssText(svg.styleSheet(document)));
-for (const file of ['reader.css', 'reader.js']) await copyFile(path.join(root, file), path.join(output, 'assets', file));
-const fonts = path.join(root, 'node_modules/@fontsource-variable/noto-serif-sc');
+for (const file of files) await copyFile(path.join(root, file), path.join(output, 'assets', file));
+const fonts = path.join(root, 'node_modules/@fontsource-variable/jetbrains-mono');
 await cp(path.join(fonts, 'files'), path.join(output, 'assets/fonts/files'), { recursive: true });
 await copyFile(path.join(fonts, 'index.css'), path.join(output, 'assets/fonts/index.css'));
 await copyFile(path.join(fonts, 'LICENSE'), path.join(output, 'assets/fonts/LICENSE'));
@@ -130,10 +224,13 @@ await writeFile(path.join(output, 'assets/licenses/NewCM.txt'),
   `${mathFont.name} ${mathFont.version}\n${mathFont.repository.url}\nLicense: ${mathFont.license}\n\n` +
   await readFile(path.join(root, 'node_modules/@mathjax/src/LICENSE'), 'utf8'));
 await copyFile(path.join(root, 'node_modules/highlight.js/LICENSE'), path.join(output, 'assets/licenses/highlight.js.txt'));
+await copyFile(path.join(root, 'content/rope.md'), path.join(output, postPath, 'rope.md'));
 await copyFile(path.join(root, 'content/rope.md'), path.join(output, 'rope/rope.md'));
 await writeFile(path.join(output, '.nojekyll'), '');
-await writeFile(path.join(output, 'index.html'), `<!doctype html>
+await writeFile(path.join(output, 'sitemap.xml'), `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${['', postPath, 'archives/'].map((route) => `<url><loc>${siteUrl}${route}</loc></url>`).join('')}</urlset>\n`);
+await writeFile(path.join(output, 'rope/index.html'), `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="0;url=rope/"><title>Casebook · RoPE</title></head>
-<body><a href="rope/">阅读 RoPE</a></body></html>\n`);
-console.log(`Built RoPE: ${displayCount} display formulas, ${inlineCount} inline formulas. All assets are local.`);
+<meta http-equiv="refresh" content="0;url=../${postPath}"><link rel="canonical" href="${siteUrl}${postPath}"><title>RoPE · Casebook</title></head>
+<body><a href="../${postPath}">阅读 RoPE</a><script>location.replace('../${postPath}' + location.search + location.hash);</script></body></html>\n`);
+console.log(`Built home, archives, RoPE article, and legacy redirect: ${displayCount} display formulas, ${inlineCount} inline formulas. All assets are local.`);
