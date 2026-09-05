@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="description" content="从角频率、二维旋转矩阵到 Qwen3.5 的 partial RoPE：论文公式与 Transformers 源码的对应。">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="RoPE · Casebook">
+  <meta property="og:description" content="从角频率、旋转矩阵到 Transformers 实现。">
+  <meta property="og:url" content="https://taking-lying-flat.github.io/scratch/rope/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="RoPE · Casebook">
+  <meta name="twitter:description" content="论文公式与 Qwen3.5 源码的对应。">
+  <title>RoPE · Casebook</title>
+  <link rel="canonical" href="https://taking-lying-flat.github.io/scratch/rope/">
+  <link rel="stylesheet" href="../assets/fonts/index.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/reader.css">
+  <script src="../assets/reader.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#article">跳转到正文</a>
+  <header class="topbar">
+    <a class="brand" href="../">CASEBOOK<span>技术笔记</span></a>
+    <div class="topbar-actions">
+      <a href="https://github.com/taking-lying-flat/scratch/blob/main/site/content/rope.md">查看源文</a>
+      <button type="button" id="print-button" hidden>打印 / PDF</button>
+    </div>
+  </header>
+  <div class="reading-layout">
+    <aside class="sidebar">
+      <nav class="toc" aria-label="本章目录">
+        <p class="toc-label">本章内容</p>
+        <ol>{{TOC}}</ol>
+      </nav>
+      <a class="repository-link" href="https://github.com/taking-lying-flat/scratch">GitHub 仓库 ↗</a>
+    </aside>
+    <main id="article">
+      <header class="article-header">
+        <p class="eyebrow">QWEN3.5 <span>／</span> 位置编码</p>
+        <h1>RoPE</h1>
+        <p class="subtitle">从角频率、旋转矩阵到 Transformers 实现</p>
+      </header>
+      <details class="mobile-toc">
+        <summary>本章内容</summary>
+        <nav aria-label="移动端章节目录"><ol>{{TOC}}</ol></nav>
+      </details>
+      <article class="prose">{{CONTENT}}</article>
+      <footer class="article-footer">
+        <span>RoPE · Qwen3.5</span>
+        <a href="#article">返回顶部 ↑</a>
+      </footer>
+    </main>
+  </div>
+  <p class="sr-only" id="copy-status" role="status" aria-live="polite"></p>
+</body>
+</html>
