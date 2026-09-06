@@ -187,7 +187,9 @@ CUDA Graph padding slot
 > [!TIP]
 > 建议同时修复两层：`producer` 保证不产生负长度，`consumer` 则维护 `0 <= seq_len <= min(stride, max_seq_len)`，避免其他 `caller` 再次破坏 `kernel invariant`
 
-**Producer：禁止产生负 context length**：修复首先应该从 producer 做，因为 context length 本身就不应该允许负数。native MTP path 应该在构造 per-token sequence lengths 时直接 clamp 到 0；uniform speculative path 使用同样的算式，也应该同时做 lower-bound clamp。这样 padding request 的 `[−1,0]` 会直接变成 `[0,0]`，对所有正常 request 的 `[L-1,L]` 完全没有影响
+### Producer：禁止产生负 context length
+
+修复首先应该从 producer 做，因为 context length 本身就不应该允许负数。native MTP path 应该在构造 per-token sequence lengths 时直接 clamp 到 0；uniform speculative path 使用同样的算式，也应该同时做 lower-bound clamp。这样 padding request 的 `[−1,0]` 会直接变成 `[0,0]`，对所有正常 request 的 `[L-1,L]` 完全没有影响
 
 ```python
 seq_lens_buffer[:] = (
@@ -198,7 +200,9 @@ seq_lens_buffer[:] = (
 ).clamp_min_(0)
 ```
 
-**Consumer：加固 `persistent_topk`**：第二层应该 harden `persistent_topk`。kernel 不应该假设所有 caller 永远传入合法 length，尤其这个 length 会直接决定内存访问范围和 cooperative topology。不能先把它读进 `uint32_t` 再 clamp，因为 -1 此时已经变成 `UINT_MAX`；应该先保持 signed 类型判断下界，再把合法正数限制到实际 row width
+### Consumer：加固 `persistent_topk`
+
+第二层应该 harden `persistent_topk`。kernel 不应该假设所有 caller 永远传入合法 length，尤其这个 length 会直接决定内存访问范围和 cooperative topology。不能先把它读进 `uint32_t` 再 clamp，因为 -1 此时已经变成 `UINT_MAX`；应该先保持 signed 类型判断下界，再把合法正数限制到实际 row width
 
 ```cpp
 const int32_t raw_seq_len = params.lengths[row_idx];

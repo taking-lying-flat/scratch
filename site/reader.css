@@ -65,7 +65,6 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
 .prose blockquote { margin: 24px 0; padding: 18px 22px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; background: var(--surface); }
 .prose blockquote > :last-child { margin-bottom: 0; }
 .prose .callout { border-left-color: var(--callout-accent, var(--accent)); }
-.prose .callout-title { margin-bottom: 10px; color: var(--callout-accent, var(--accent)); font: 600 13px/1.8 var(--sans); }
 .callout-note { --callout-accent: var(--fgColor-accent); }
 .callout-tip { --callout-accent: var(--fgColor-success); }
 .callout-important { --callout-accent: var(--fgColor-done); }
@@ -90,7 +89,6 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
 .equation svg { max-width: none; }
 .code-block {
   --code-bg: var(--surface);
-  --code-bar: var(--surface);
   --code-ink: var(--ink);
   --code-muted: var(--prettylights-syntax-comment);
   --code-border: var(--line);
@@ -103,6 +101,7 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
   --code-added-bg: var(--prettylights-syntax-markup-inserted-bg);
   --code-deleted: var(--prettylights-syntax-markup-deleted-text);
   --code-deleted-bg: var(--prettylights-syntax-markup-deleted-bg);
+  position: relative;
   font-family: var(--sans);
   margin: 30px 0 35px;
   border: 1px solid var(--code-border);
@@ -110,12 +109,11 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
   overflow: hidden;
   background: var(--code-bg);
 }
-.code-block figcaption { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; min-height: 45px; padding: 9px 18px; border-bottom: 1px solid var(--code-border); background: var(--code-bar); font: 11px/1.6 var(--mono); color: var(--code-muted); }
-.window-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.code-actions { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
-.code-language { font: 10px var(--sans); color: var(--code-muted); letter-spacing: .035em; }
-.copy-button { border: 1px solid var(--line); border-radius: 6px; background: var(--button-default-bgColor-rest); font: 11px var(--sans); padding: 5px 9px; min-height: 26px; white-space: nowrap; color: var(--ink); }
+.copy-button { position: absolute; top: 8px; right: 8px; z-index: 1; border: 1px solid var(--line); border-radius: 6px; background: var(--button-default-bgColor-rest); font: 11px var(--sans); padding: 5px 9px; min-height: 26px; white-space: nowrap; color: var(--ink); }
 .copy-button:hover { background: var(--button-default-bgColor-hover); }
+@media (hover: hover) {
+  .code-block:not(:hover):not(:focus-within) .copy-button { opacity: 0; }
+}
 .code-block :focus-visible { outline-color: var(--accent); outline-offset: -3px; }
 .code-block pre { display: flex; align-items: flex-start; gap: 23px; margin: 0; padding: 22px 24px 25px; overflow-x: auto; font: 13px/1.9 var(--mono); font-variant-ligatures: none; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .line-numbers { flex: none; min-width: 2ch; padding-right: 1px; text-align: right; color: var(--code-muted); user-select: none; -webkit-user-select: none; }
@@ -214,8 +212,6 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
   .prose { font-size: 16px; line-height: 1.85; }
   .equation { font-size: 16px; margin: 22px 0; }
   .code-block { margin-block: 25px 29px; }
-  .code-block figcaption { gap: 10px; min-height: 42px; padding-inline: 14px; font-size: 10px; }
-  .code-language { display: none; }
   .copy-button { padding-inline: 7px; }
   .code-block pre { gap: 16px; padding: 19px 15px 22px; font-size: 12px; }
   .home-page { padding-top: 26px; padding-bottom: 40px; }
@@ -250,7 +246,7 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
 @media print {
   @page { size: A4; margin: 17mm 15mm; }
   :root, :root[data-color-mode] { color-scheme: light; --page: #fff; --card: #fff; --ink: #1f2328; --muted: #59636e; --line: #d1d9e0; --surface: #f6f8fa; --accent: #0969da; }
-  .site-header, .site-footer, .copy-button, .line-numbers, .code-actions, .post-footer, .skip-link { display: none !important; }
+  .site-header, .site-footer, .copy-button, .line-numbers, .post-footer, .skip-link { display: none !important; }
   .main { max-width: none; min-height: 0; margin: 0; padding: 0; }
   .post-header { margin: 0 0 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
   h1 { font-size: 28pt; }
@@ -259,9 +255,7 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
   .prose p { margin-bottom: 9pt; }
   .prose li { margin-block: 4pt; }
   .equation { font-size: 10.5pt; margin: 12pt 0; padding: 4pt 0; overflow: visible; break-inside: avoid; }
-  .code-block { --code-bg: #fff; --code-bar: #f6f8fa; --code-ink: #1f2328; --code-muted: #59636e; --code-border: #d1d9e0; --code-keyword: #cf222e; --code-string: #0a3069; --code-title: #6639ba; --code-constant: #0550ae; --code-variable: #a40e26; --code-added: #0550ae; --code-added-bg: #ddf4ff; --code-deleted: #82071e; --code-deleted-bg: #ffebe9; margin: 12pt 0; border: 1px solid var(--code-border); border-radius: 4px; box-shadow: none; break-inside: avoid; }
-  .code-block figcaption { display: block; min-height: 0; padding: 6pt 9pt; font-size: 7pt; }
-  .window-title { display: block; text-align: left; white-space: normal; }
+  .code-block { --code-bg: #fff; --code-ink: #1f2328; --code-muted: #59636e; --code-border: #d1d9e0; --code-keyword: #cf222e; --code-string: #0a3069; --code-title: #6639ba; --code-constant: #0550ae; --code-variable: #a40e26; --code-added: #0550ae; --code-added-bg: #ddf4ff; --code-deleted: #82071e; --code-deleted-bg: #ffebe9; margin: 12pt 0; border: 1px solid var(--code-border); border-radius: 4px; box-shadow: none; break-inside: avoid; }
   .code-block pre { display: block; padding: 8pt 9pt; overflow: visible; font-size: 7.5pt; line-height: 1.6; }
   .code-block code { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .code-block, code { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
