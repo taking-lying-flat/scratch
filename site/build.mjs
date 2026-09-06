@@ -177,13 +177,35 @@ const article = page({
 const home = page({
   title: 'Casebook · 技术笔记', description: '关于模型、论文与源码的技术笔记。', pageClass: 'home-page',
   body: `<header class="home-intro">
+    <p class="home-eyebrow">笔记索引</p>
     <h1>Casebook</h1>
   </header>
-  <section aria-label="文章列表">
+  <section aria-labelledby="post-list-title">
+    <div class="post-list-heading">
+      <h2 id="post-list-title">全部文章 <span>01</span></h2>
+      <a href="archives/">查看归档 <span aria-hidden="true">↗</span></a>
+    </div>
     <article class="post-entry">
-      <h2><a href="${postPath}">RoPE</a></h2>
-      <p class="entry-excerpt">${description}</p>
-      <footer class="entry-footer"><div class="post-meta">${metadata}</div><span class="entry-arrow" aria-hidden="true">→</span></footer>
+      <div class="entry-content">
+        <p class="entry-category">位置编码</p>
+        <h3><a href="${postPath}">RoPE</a></h3>
+        <p class="entry-description">从角频率、旋转矩阵到 Qwen3.5 实现</p>
+        <ul class="entry-topics" aria-label="文章主题"><li>Qwen3.5</li><li>Transformers</li></ul>
+        <footer class="entry-footer">
+          <div class="post-meta">${metadata}</div>
+          <span class="entry-arrow" aria-hidden="true">↗</span>
+        </footer>
+      </div>
+      <div class="entry-art" aria-hidden="true">
+        <span class="art-caption">RoPE / 01</span>
+        <div class="rotation-figure">
+          <span class="rotation-axis axis-x"></span><span class="rotation-axis axis-y"></span>
+          <span class="rotation-ring ring-outer"></span><span class="rotation-ring ring-inner"></span>
+          <span class="rotation-vector vector-start"></span><span class="rotation-vector vector-end"></span>
+          <span class="rotation-origin"></span><span class="rotation-theta">θ</span>
+        </div>
+        <span class="art-footer">POSITION ENCODING</span>
+      </div>
     </article>
   </section>`,
 });
@@ -194,6 +216,7 @@ const archives = page({
       <h2 id="year-2026">2026 <span>1</span></h2>
       <div class="archive-month"><h3>九月</h3><article class="archive-entry">
         <h4><a href="../${postPath}">RoPE</a></h4>
+        <p>从角频率、旋转矩阵到 Qwen3.5 实现</p>
         <div class="post-meta">${metadata}</div>
       </article></div>
     </section>`,
