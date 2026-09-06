@@ -18,10 +18,8 @@
 
 ## 案例一：DeepSpeed ZeRO-3 梯度归约竞态
 
-### TL;DR
-
 > [!CAUTION]
-> `DeepSpeed` 固定等待 `default_stream()`，但 `param.grad` 可能由 `non-default current_stream()` 上的 `backward kernel` 产生。因此 `reduce_and_partition_stream` 可能在梯度写完前就读取它，形成 `read-after-write race`，并把污染后的 `gradient shard` 带入第一次 `optimizer update`
+> **TL;DR**：`DeepSpeed` 固定等待 `default_stream()`，但 `param.grad` 可能由 `non-default current_stream()` 上的 `backward kernel` 产生。因此 `reduce_and_partition_stream` 可能在梯度写完前就读取它，形成 `read-after-write race`，并把污染后的 `gradient shard` 带入第一次 `optimizer update`
 
 ```diff
  self.reduce_and_partition_stream.wait_stream(
@@ -30,9 +28,7 @@
  )
 ```
 
-### 现象与复现结果
-
-上游复现展示典型的随机污染特征：
+**现象与复现结果**：上游复现展示典型的随机污染特征：
 
 | 配置项 | 复现环境 / 结果 |
 | --- | --- |
@@ -45,9 +41,7 @@
 
 污染位置并不固定，可能出现在不同 `rank`、不同 `layer`，尤其容易影响 `attention projection`、`MLP weight` 等参数的 `gradient shard`。这种随机性正是 `CUDA kernel` 调度时序参与故障的信号
 
-### ZeRO-3 的梯度生产与消费
-
-当 `overlap_comm=True` 时，`ZeRO-3` 使用独立的 `reduce_and_partition_stream`，让 `backward` 计算与梯度通信重叠。某个参数的梯度完成后，`gradient hook` 会进入 `stage3.py` 的 `__add_grad_to_ipg_bucket()`：
+**ZeRO-3 的梯度生产与消费**：当 `overlap_comm=True` 时，`ZeRO-3` 使用独立的 `reduce_and_partition_stream`，让 `backward` 计算与梯度通信重叠。某个参数的梯度完成后，`gradient hook` 会进入 `stage3.py` 的 `__add_grad_to_ipg_bucket()`：
 
 ```python
 @torch.no_grad()
@@ -68,9 +62,7 @@ def __add_grad_to_ipg_bucket(self, param):
 - `reduce_and_partition_stream` 是 `gradient buffer` 的 `consumer`
 - `consumer` 必须在 `producer` 完成写入后才能执行 `bucket copy` 和 `reduce-scatter`
 
-### 错误的数据依赖
-
-`PyTorch autograd` 不保证 `backward kernel` 一定运行在 `CUDA default stream`。它会记录 `forward op` 所在的 `stream`，并让对应的 `backward CUDA op` 在相应 `stream` 上执行。`gradient hook` 又在 `autograd backward` 的执行上下文中同步触发，因此 `hook` 内的 `current_stream()` 才是实际生产当前梯度的 `stream`
+**错误的数据依赖**：`PyTorch autograd` 不保证 `backward kernel` 一定运行在 `CUDA default stream`。它会记录 `forward op` 所在的 `stream`，并让对应的 `backward CUDA op` 在相应 `stream` 上执行。`gradient hook` 又在 `autograd backward` 的执行上下文中同步触发，因此 `hook` 内的 `current_stream()` 才是实际生产当前梯度的 `stream`
 
 旧代码建立的是：
 
@@ -99,9 +91,7 @@ reduce_and_partition_stream:
 > [!WARNING]
 > `reduce_stream.wait_stream(default_stream)` 只能证明 `default stream` 已完成，不能证明真正写入 `param.grad` 的 `backward_stream` 已完成。等待错误的对象，等价于没有建立所需的数据依赖
 
-### `Race` 如何污染权重
-
-正常顺序应当是：
+**`Race` 如何污染权重**：正常顺序应当是：
 
 ```text
 backward kernel
@@ -124,16 +114,12 @@ S1 / backward_stream                   reduce_and_partition_stream
 
 这是一种典型的 `read-after-write (RAW) data hazard`。`consumer` 可能读到尚未完整写入的数据，污染后的内容随后进入 `reduce-scatter`，形成错误的 `gradient partition`
 
-### 为什么 `NaN` 在 `optimizer.step()` 后才出现
-
 > [!NOTE]
-> `Race` 发生在 `backward`，但首先损坏的是 `gradient`，而不是 `parameter`。`Adam/AdamW` 在 `optimizer.step()` 中消费错误梯度，更新一阶动量、二阶动量和 `parameter partition` 后，`NaN` 才真正进入权重
+> **为什么 `NaN` 在 `optimizer.step()` 后才出现**：`Race` 发生在 `backward`，但首先损坏的是 `gradient`，而不是 `parameter`。`Adam/AdamW` 在 `optimizer.step()` 中消费错误梯度，更新一阶动量、二阶动量和 `parameter partition` 后，`NaN` 才真正进入权重
 
 因此，从外部看起来像是“`optimizer` 第一步把权重算坏”，实际却是 `optimizer` 消费上一步已经被 `CUDA race` 污染的 `gradient shard`
 
-### 修复为什么有效
-
-`__add_grad_to_ipg_bucket()` 从 `autograd gradient hook` 中调用，因此 `current_stream()` 正是 `autograd` 为当前 `backward op` 设置的 `stream`：
+**修复为什么有效**：`__add_grad_to_ipg_bucket()` 从 `autograd gradient hook` 中调用，因此 `current_stream()` 正是 `autograd` 为当前 `backward op` 设置的 `stream`：
 
 - `backward` 位于 `default stream` 时，`current_stream()` 与旧行为等价
 - `backward` 位于 `non-default stream` 时，它能建立真正的 `producer -> consumer` 依赖
@@ -144,16 +130,12 @@ S1 / backward_stream                   reduce_and_partition_stream
 
 ## 案例二：FlashInfer GDN Pipeline 死锁
 
-### TL;DR
-
 > [!CAUTION]
-> `SM100 GDN prefill kernel` 中，`o_store pipeline` 的合法 `producer` 是 `CG1`，但 `CG0` 也错误调用 `o_store_producer.tail()`。`CG0` 没有执行配套的 `acquire/commit`，其本地 `PipelineState` 与真实 `mbarrier phase` 不一致，最终等待一个不会再出现的 `barrier transition`
+> **TL;DR**：`SM100 GDN prefill kernel` 中，`o_store pipeline` 的合法 `producer` 是 `CG1`，但 `CG0` 也错误调用 `o_store_producer.tail()`。`CG0` 没有执行配套的 `acquire/commit`，其本地 `PipelineState` 与真实 `mbarrier phase` 不一致，最终等待一个不会再出现的 `barrier transition`
 
 这个缺陷在 `non-null initial state` 与 `long-tail ragged varlen workload` 下更容易触发。局部 `warp group` 阻塞会进一步阻止整个 `CTA` 完成，最终表现为 `GPU kernel hang`
 
-### `CTA` 的 `warp` 分工
-
-一个 `FlashInfer SM100 GDN kernel CTA` 包含 12 个 `warp`，共 384 个线程。各 `warp` 的角色划分如下：
+**`CTA` 的 `warp` 分工**：一个 `FlashInfer SM100 GDN kernel CTA` 包含 12 个 `warp`，共 384 个线程。各 `warp` 的角色划分如下：
 
 | `Warp` | 名称 | 大小 | 主要职责 |
 | --- | --- | --- | --- |
@@ -164,9 +146,7 @@ S1 / backward_stream                   reduce_and_partition_stream
 | `warp 10` | `gate/beta load warp` | `1 warp` | 加载 `gate`、`beta` |
 | `warp 11` | `epilogue warp` | `1 warp` | 把最终输出 `O` 写回 `global memory` |
 
-### `o_store pipeline` 的所有权
-
-`o_store_producer` 描述的是从 `CG1` 到 `epilogue warp` 的输出 `pipeline`：
+**`o_store pipeline` 的所有权**：`o_store_producer` 描述的是从 `CG1` 到 `epilogue warp` 的输出 `pipeline`：
 
 ```text
 CG1 / producer                          Epilogue / consumer
@@ -202,9 +182,7 @@ o_store_producer, o_store_consumer = pipeline.PipelineAsync.create(
 
 因此，`CG1` 是合法 `producer`，负责 `acquire -> 写入 shared memory -> commit`；`epilogue warp` 是 `consumer`，负责 `wait -> 写回 global memory -> release`。`CG0` 从未参与这条 `pipeline` 的正常生产过程
 
-### `CUTLASS PipelineState` 与 `tail()`
-
-`CUTLASS pipeline` 是一套基于 `mbarrier` 的状态机，而不只是一个 `buffer` 封装：
+**`CUTLASS PipelineState` 与 `tail()`**：`CUTLASS pipeline` 是一套基于 `mbarrier` 的状态机，而不只是一个 `buffer` 封装：
 
 | 操作 | 执行方 | 同步含义 |
 | --- | --- | --- |
@@ -216,9 +194,7 @@ o_store_producer, o_store_consumer = pipeline.PipelineAsync.create(
 
 `PipelineState` 保存 `circular buffer` 当前的 `index` 和 `phase`。`tail()` 仍属于同步协议的一部分，必须基于该 `producer` 经过 `acquire/commit` 后形成的正确状态执行
 
-### 错误的 `owner` 调用 `tail()`
-
-`CG0` 的收尾代码错误包含：
+**错误的 `owner` 调用 `tail()`**：`CG0` 的收尾代码错误包含：
 
 ```python
 work = scheduler.get_current_work()
@@ -248,9 +224,7 @@ CG1 ─── acquire
      └─ o_store_producer.tail()   ✅ 真正 owner
 ```
 
-### 为什么会永久死锁
-
-`CG0` 没有经历 `o_store pipeline` 的 `acquire/commit` 状态推进，却拿自己的本地 `state` 执行 `tail()`。它可能仍在等待旧 `index/phase` 对应的 `empty transition`，而 `CG1` 与 `epilogue` 已经沿正确 `phase` 继续推进，不会再产生 `CG0` 所等待的信号
+**为什么会永久死锁**：`CG0` 没有经历 `o_store pipeline` 的 `acquire/commit` 状态推进，却拿自己的本地 `state` 执行 `tail()`。它可能仍在等待旧 `index/phase` 对应的 `empty transition`，而 `CG1` 与 `epilogue` 已经沿正确 `phase` 继续推进，不会再产生 `CG0` 所等待的信号
 
 ```text
 CG0 (warp 0-3)             CG1 (warp 4-7)          Epilogue (warp 11)
@@ -285,10 +259,8 @@ CG0 等不到 mbarrier
 > [!WARNING]
 > `tail()` 不是无害的析构函数。让非 `owner` 调用它，会用未经正常推进的 `PipelineState` 参与 `barrier lifetime synchronization`，足以让整个 `CTA` 永久无法 `retire`
 
-### 正确的 `pipeline invariant`
-
 > [!TIP]
-> 一条 `warp-specialized pipeline` 的生命周期只能由其合法参与者维护：`producer` 推进 `acquire/commit/tail`，`consumer` 推进 `wait/release`。没有参与生产的 `warp group` 不得代替 `owner` 执行终止同步
+> **正确的 `pipeline invariant`**：一条 `warp-specialized pipeline` 的生命周期只能由其合法参与者维护：`producer` 推进 `acquire/commit/tail`，`consumer` 推进 `wait/release`。没有参与生产的 `warp group` 不得代替 `owner` 执行终止同步
 
 ## 两个案例的共同模式
 
