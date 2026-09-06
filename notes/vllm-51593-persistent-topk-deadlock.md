@@ -105,11 +105,11 @@ CUDA Graph padding slot
     return seq_lens, block_table, decode_lens, num_decodes, requires_padding
     ```
 
-普通 `decode` 的 `next_n=1`，同一个公式退化成 `seq_len - 1 + 1 = seq_len`，所以 `padding` 的 0 仍然是 0；`MTP` 的 `next_n=2` 才会让第一个位置相当于 `seq_len-1`，因此当 `padding request` 的 `seq_len=0` 时得到 `-1`
+- 普通 `decode` 的 `next_n=1`，同一个公式退化成 `seq_len - 1 + 1 = seq_len`，所以 `padding` 的 0 仍然是 0；`MTP` 的 `next_n=2` 才会让第一个位置相当于 `seq_len-1`，因此当 `padding request` 的 `seq_len=0` 时得到 `-1`
 
-`variable-length flatten path` 又是另外一种情况：它根据真实 `decode_lens` 去展开 `token`，`padding request` 的 `decode_len=0`，因此根本不会生成任何 `expanded token`，剩余 `buffer` 还会被清零，所以那条路径不会产生这个 `-1`
+- `variable-length flatten path` 又是另外一种情况：它根据真实 `decode_lens` 去展开 `token`，`padding request` 的 `decode_len=0`，因此根本不会生成任何 `expanded token`，剩余 `buffer` 还会被清零，所以那条路径不会产生这个 `-1`
 
-真正有问题的是 `native MTP` 的固定二维 `metadata layout`，以及公式本身同样未 `clamp` 的 `uniform speculative path`
+- 真正有问题的是 `native MTP` 的固定二维 `metadata layout`，以及公式本身同样未 `clamp` 的 `uniform speculative path`
 
 ### 3. 负长度穿过 C4 indexer
 
