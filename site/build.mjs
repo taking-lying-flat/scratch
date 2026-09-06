@@ -49,6 +49,7 @@ const document = mathjax.document('', {
 
 const tokens = markdown.parse(source, {});
 if (tokens[0]?.type !== 'heading_open' || tokens[0].tag !== 'h1') throw new Error('Expected document title');
+const postTitle = tokens[1].content;
 tokens.splice(0, 3);
 let inlineCount = 0;
 let displayCount = 0;
@@ -152,10 +153,10 @@ function page({ title, description, route = '', body, type = 'website', pageClas
 }
 
 const article = page({
-  title: 'RoPE · Casebook', description, route: postPath, type: 'article', pageClass: 'post-page',
+  title: `${postTitle} · Casebook`, description, route: postPath, type: 'article', pageClass: 'post-page',
   body: `<article class="post-single">
     <header class="post-header">
-      <h1>RoPE</h1>
+      <h1>${escape(postTitle)}</h1>
       <div class="post-meta">${metadata}<span>taking-lying-flat</span></div>
     </header>
     <details class="toc">
@@ -185,9 +186,7 @@ const home = page({
     </div>
     <article class="post-entry">
       <div class="entry-content">
-        <p class="entry-category">位置编码</p>
-        <h3><a href="${postPath}">RoPE</a></h3>
-        <p class="entry-description">从角频率、旋转矩阵到 Qwen3.5 实现</p>
+        <h3><a href="${postPath}">${escape(postTitle)}</a></h3>
         <ul class="entry-topics" aria-label="文章主题"><li>Qwen3.5</li><li>Transformers</li></ul>
         <footer class="entry-footer">
           <div class="post-meta">${metadata}</div>
@@ -195,7 +194,7 @@ const home = page({
         </footer>
       </div>
       <div class="entry-art" aria-hidden="true">
-        <span class="art-caption">RoPE / 01</span>
+        <span class="art-caption">RoFormer / 01</span>
         <div class="rotation-figure">
           <span class="rotation-axis axis-x"></span><span class="rotation-axis axis-y"></span>
           <span class="rotation-ring ring-outer"></span><span class="rotation-ring ring-inner"></span>
@@ -213,8 +212,7 @@ const archives = page({
     <section class="archive-year" aria-labelledby="year-2026">
       <h2 id="year-2026">2026 <span>1</span></h2>
       <div class="archive-month"><h3>九月</h3><article class="archive-entry">
-        <h4><a href="../${postPath}">RoPE</a></h4>
-        <p>从角频率、旋转矩阵到 Qwen3.5 实现</p>
+        <h4><a href="../${postPath}">${escape(postTitle)}</a></h4>
         <div class="post-meta">${metadata}</div>
       </article></div>
     </section>`,
@@ -248,6 +246,6 @@ await writeFile(path.join(output, 'sitemap.xml'), `<?xml version="1.0" encoding=
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${['', postPath, 'archives/'].map((route) => `<url><loc>${siteUrl}${route}</loc></url>`).join('')}</urlset>\n`);
 await writeFile(path.join(output, 'rope/index.html'), `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="0;url=../${postPath}"><link rel="canonical" href="${siteUrl}${postPath}"><title>RoPE · Casebook</title></head>
-<body><a href="../${postPath}">阅读 RoPE</a><script>location.replace('../${postPath}' + location.search + location.hash);</script></body></html>\n`);
+<meta http-equiv="refresh" content="0;url=../${postPath}"><link rel="canonical" href="${siteUrl}${postPath}"><title>${escape(postTitle)} · Casebook</title></head>
+<body><a href="../${postPath}">阅读 ${escape(postTitle)}</a><script>location.replace('../${postPath}' + location.search + location.hash);</script></body></html>\n`);
 console.log(`Built home, archives, RoPE article, and legacy redirect: ${displayCount} display formulas, ${inlineCount} inline formulas. All assets are local.`);

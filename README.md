@@ -1,6 +1,6 @@
 ## Casebook
 
-- [RoPE：论文公式与 Qwen3.5 源码解析](https://taking-lying-flat.github.io/scratch/posts/rope/) · [源稿](site/content/rope.md)
+- [RoFormer: Enhanced Transformer with Rotary Position Embedding](https://taking-lying-flat.github.io/scratch/posts/rope/) · [源稿](site/content/rope.md)
 - [Packing、Padding-Free 与 FlashAttention Varlen 的完整数据链路](casebook/packing-flash-attention.md)
 - [ms-swift ChatML 渲染：Qwen3.5 推理模式与多模态 Message 编码](casebook/ms-swift-chatml-rendering.md)
 - [ms-swift 模型构造与运行时故障分析](casebook/ms-swift-model-runtime-failures.md)

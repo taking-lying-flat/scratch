@@ -1,4 +1,4 @@
-# RoPE
+# RoFormer: Enhanced Transformer with Rotary Position Embedding
 
 RoPE（Rotary Position Embedding）通过旋转 Q/K 特征，使 attention 内积包含相对位置信息。设旋转维度为偶数 $`d_r`$，频率底数为 $`\beta`$，位置为 $`p`$；第 $`i`$ 个二维子空间的角频率与旋转角为
 
