@@ -24,13 +24,14 @@ const output = path.join(root, 'dist');
 const siteUrl = 'https://taking-lying-flat.github.io/blog/';
 const posts = JSON.parse(await readFile(path.join(root, 'posts.json'), 'utf8'))
   .sort((a, b) => b.date.localeCompare(a.date));
-// Render source headings as written; do not add article or code-block titles.
+// Render article headings as written; code captions belong to the code block.
 // Repository-authored HTML tables are rendered alongside Markdown.
 const markdown = new MarkdownIt({ html: true, typographer: false });
 const escape = markdown.utils.escapeHtml;
 for (const [name, language] of Object.entries({ python, json, cpp, bash, diff })) {
   hljs.registerLanguage(name, language);
 }
+const languageNames = { python: 'Python', json: 'JSON', cpp: 'C++ / CUDA', bash: 'Shell', diff: 'Diff', text: 'Text' };
 
 markdown.inline.ruler.before('backticks', 'math_inline', (state, silent) => {
   if (!state.src.startsWith('$`', state.pos)) return false;
@@ -128,13 +129,18 @@ markdown.renderer.rules.html_block = (items, i) => items[i].content.includes('<t
   ? `${tableWrapper}${items[i].content}</div>\n` : items[i].content;
 markdown.renderer.rules.math_inline = (items, i) =>
   `<span class="math-inline" role="math" aria-label="${escape(items[i].content)}">${items[i].meta.html}</span>`;
-markdown.renderer.rules.fence = (items, i) => {
+markdown.renderer.rules.fence = (items, i, _options, env) => {
   const token = items[i];
   const language = token.info.trim().split(/\s+/)[0] || 'text';
   if (language === 'math') {
     return `<div class="equation" tabindex="0" role="math" aria-label="${escape(token.content)}">${token.meta.html}</div>\n`;
   }
   const id = token.attrGet('id');
+  const label = languageNames[language] ?? language;
+  const name = env.slug === 'rope'
+    ? (language === 'json' ? 'config.json · text_config' : language === 'text' ? '张量维度'
+      : token.content.includes('def rotate_half') ? 'rotate_half / apply_rotary_pos_emb' : 'compute_default_rope_parameters')
+    : label;
   const code = hljs.getLanguage(language)
     ? hljs.highlight(token.content, { language, ignoreIllegals: true }).value : escape(token.content);
   const lineCount = token.content.replace(/\n$/, '').split('\n').length;
@@ -142,7 +148,10 @@ markdown.renderer.rules.fence = (items, i) => {
     Array.from({ length: lineCount }, (_, line) => line + 1).join('\n')
   }</span>`;
   return `<figure class="code-block"${id ? ` id="${escape(id)}"` : ''}>
-    <button type="button" class="copy-button" hidden>复制</button>
+    <figcaption class="code-caption">
+      <span class="code-caption-text">${escape(name)}</span>
+      <span class="code-actions">${name !== label ? `<span class="code-language">${escape(label)}</span>` : ''}<button type="button" class="copy-button" hidden>复制</button></span>
+    </figcaption>
     <pre tabindex="0">${numbers}<code class="language-${escape(language)}">${code}</code></pre>
   </figure>\n`;
 };
