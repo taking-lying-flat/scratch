@@ -141,12 +141,12 @@ markdown.renderer.rules.fence = (items, i, _options, env) => {
 };
 
 const ropeSections = [
-  { id: 'frequency', label: '角频率与底数', prefix: 'RoPE（Rotary' },
-  { id: 'configuration', label: '模型配置与张量', fence: 'json' },
-  { id: 'rotation', label: '二维旋转', prefix: 'RoFormer §3.2.1' },
-  { id: 'relative-position', label: '完整矩阵与相对位置', prefix: 'RoFormer 式（15）' },
-  { id: 'partial-rope', label: 'Partial RoPE', prefix: 'Qwen3.5 的 partial RoPE' },
-  { id: 'implementation', label: '张量计算与源码', prefix: '对普通 RoPE' },
+  { id: 'frequency', prefix: 'RoPE（Rotary' },
+  { id: 'configuration', fence: 'json' },
+  { id: 'rotation', prefix: 'RoFormer §3.2.1' },
+  { id: 'relative-position', prefix: 'RoFormer 式（15）' },
+  { id: 'partial-rope', prefix: 'Qwen3.5 的 partial RoPE' },
+  { id: 'implementation', prefix: '对普通 RoPE' },
 ];
 
 for (const post of posts) {
@@ -159,7 +159,6 @@ for (const post of posts) {
   tokens.splice(0, 3);
   removeManualToc(tokens);
   prepareCallouts(tokens);
-  const sections = [];
   const usedIds = new Map([[post.titleId, 1]]);
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i].type !== 'heading_open') continue;
@@ -169,7 +168,6 @@ for (const post of posts) {
     usedIds.set(baseId, occurrence + 1);
     const id = occurrence ? `${baseId}-${occurrence}` : baseId;
     tokens[i].attrSet('id', id);
-    if (Number(tokens[i].tag.slice(1)) <= 3) sections.push({ id, label, level: Number(tokens[i].tag.slice(1)) });
   }
   if (post.slug === 'rope') {
     for (const section of ropeSections) {
@@ -178,7 +176,6 @@ for (const post of posts) {
         : token.type === 'paragraph_open' && tokens[i + 1]?.content.startsWith(section.prefix));
       if (index < 0) throw new Error(`Missing section: ${section.id}`);
       tokens[index].attrSet('id', section.id);
-      sections.push({ ...section, level: 2 });
     }
   }
   const previousDisplays = displayCount;
@@ -196,8 +193,6 @@ for (const post of posts) {
   const firstParagraph = tokens.findIndex((token, i) => token.type === 'paragraph_open' && tokens[i + 1]?.content);
   post.description = inlineText(tokens[firstParagraph + 1]).slice(0, 180) || post.title;
   post.content = markdown.renderer.render(tokens, markdown.options, { slug: post.slug });
-  post.toc = sections.map(({ id, label, level }) =>
-    `<li class="toc-level-${level}"><a href="#${escape(id)}">${escape(label)}</a></li>`).join('\n');
 }
 
 const template = await readFile(path.join(root, 'template.html'), 'utf8');
@@ -274,7 +269,6 @@ for (const [index, post] of posts.entries()) {
         <h1 id="${escape(post.titleId)}">${escape(post.title)}</h1>
         <div class="post-meta">${metadata(post)}<span>taking-lying-flat</span></div>
       </header>
-      ${post.toc ? `<details class="toc"><summary>目录</summary><nav aria-label="文章目录"><ol>${post.toc}</ol></nav></details>` : ''}
       <div class="prose">${post.content}</div>
       <footer class="post-footer">
         <div class="post-topics" aria-label="文章主题">${post.tags.map((tag) => `<span>${escape(tag)}</span>`).join('')}</div>
@@ -293,10 +287,13 @@ for (const [index, post] of posts.entries()) {
 
 await writeFile(path.join(output, 'assets/math.css'), adaptor.cssText(svg.styleSheet(document)));
 for (const file of files) await copyFile(path.join(root, file), path.join(output, 'assets', file));
-const fonts = path.join(root, 'node_modules/@fontsource-variable/jetbrains-mono');
-await cp(path.join(fonts, 'files'), path.join(output, 'assets/fonts/files'), { recursive: true });
-await copyFile(path.join(fonts, 'index.css'), path.join(output, 'assets/fonts/index.css'));
-await copyFile(path.join(fonts, 'LICENSE'), path.join(output, 'assets/fonts/LICENSE'));
+for (const [name, directory] of [['jetbrains-mono', ''], ['noto-serif-sc', 'noto-serif-sc']]) {
+  const fonts = path.join(root, 'node_modules/@fontsource-variable', name);
+  const destination = path.join(output, 'assets/fonts', directory);
+  await cp(path.join(fonts, 'files'), path.join(destination, 'files'), { recursive: true });
+  await copyFile(path.join(fonts, 'index.css'), path.join(destination, 'index.css'));
+  await copyFile(path.join(fonts, 'LICENSE'), path.join(destination, 'LICENSE'));
+}
 await mkdir(path.join(output, 'assets/licenses'), { recursive: true });
 await copyFile(path.join(root, 'node_modules/@mathjax/src/LICENSE'), path.join(output, 'assets/licenses/MathJax.txt'));
 const mathFont = JSON.parse(await readFile(path.join(root, 'node_modules/@mathjax/mathjax-newcm-font/package.json'), 'utf8'));
