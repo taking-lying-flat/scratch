@@ -171,7 +171,7 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
   .post-entry:hover h2 a, .post-entry:hover .entry-arrow { color: var(--accent); }
   .post-entry:hover .entry-arrow { transform: translateX(3px); }
 }
-.home-page-shell .site-footer { max-width: 828px; justify-content: space-between; font-size: 11px; }
+.home-page-shell .site-footer { max-width: 828px; font-size: 11px; }
 .page-header { margin: 22px 0 40px; }
 .archive-page .page-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 8px 0 26px; }
 .archive-page .page-header h1 { font-size: 30px; }
@@ -189,7 +189,10 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
 .archive-entry h4 { font-family: var(--reading); font-size: 18px; font-weight: 600; line-height: 1.6; margin: 0 0 7px; }
 .archive-entry h4 a { color: var(--accent); text-decoration: none; }
 .archive-entry h4 a:hover { color: var(--accent); text-decoration: underline; }
-.site-footer { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; max-width: 828px; margin: auto; padding: 25px 24px 32px; color: var(--muted); font-size: 12px; }
+.site-footer { position: relative; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: center; gap: 6px 18px; max-width: 828px; min-height: 252px; margin: auto; padding: 176px 24px 28px; color: var(--muted); font-size: 12px; }
+.footer-art { position: absolute; inset: auto 0 0; width: 100%; height: 228px; object-fit: contain; object-position: center bottom; opacity: .6; pointer-events: none; user-select: none; }
+[data-color-mode="dark"] .footer-art { opacity: .5; }
+.site-footer > span { position: relative; z-index: 1; }
 .post-page-shell .site-footer { max-width: 1072px; }
 .site-footer a { text-decoration: none; }
 .site-footer a:hover { text-decoration: underline; }
@@ -232,6 +235,8 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
   .archive-month { grid-template-columns: 36px minmax(0, 1fr); gap: 12px; }
   .archive-entry { padding-left: 17px; }
   .archive-entry h4 { font-size: 16px; }
+  .site-footer, .home-page-shell .site-footer { min-height: 166px; padding-top: 88px; padding-bottom: 20px; flex-direction: column; align-items: center; justify-content: flex-end; gap: 3px; }
+  .footer-art { height: 150px; }
 }
 @media (max-width: 360px) {
   .nav { padding-block: 12px; }

@@ -102,6 +102,21 @@ function prepareCallouts(tokens) {
   }
 }
 
+function trimParagraphPeriods(tokens) {
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].type !== 'paragraph_open' || tokens[i + 1]?.type !== 'inline') continue;
+    const children = tokens[i + 1].children ?? [];
+    for (let j = children.length - 1; j >= 0; j--) {
+      const child = children[j];
+      if (child.nesting === -1 || ['softbreak', 'hardbreak'].includes(child.type)) continue;
+      if (child.type === 'text' && !child.content.trim()) continue;
+      if (child.type === 'html_inline' && /^<\/[\w:-]+\s*>$/.test(child.content)) continue;
+      if (child.type === 'text') child.content = child.content.replace(/。(?=\s*$)/u, '');
+      break;
+    }
+  }
+}
+
 markdown.renderer.rules.blockquote_open = (items, i, _options, _env, renderer) =>
   `<blockquote${renderer.renderAttrs(items[i])}>${items[i].meta?.label
     ? `<p class="callout-title">${escape(items[i].meta.label)}</p>` : ''}\n`;
@@ -158,6 +173,7 @@ for (const post of posts) {
   tokens.splice(0, 3);
   removeManualToc(tokens);
   prepareCallouts(tokens);
+  trimParagraphPeriods(tokens);
   const usedIds = new Map([[post.titleId, 1]]);
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i].type !== 'heading_open') continue;
@@ -198,6 +214,7 @@ const template = await readFile(path.join(root, 'template.html'), 'utf8');
 const primer = path.join(root, 'node_modules/@primer/primitives');
 const assets = new Map([
   ...['reader.css', 'reader.js', 'theme.js', 'favicon.svg'].map((file) => [file, path.join(root, file)]),
+  ['anime-readers.png', path.join(root, 'illustrations/anime-readers.png')],
   ...['light', 'dark'].map((mode) => [`github-${mode}-tritanopia.css`,
     path.join(primer, `dist/css/functional/themes/${mode}-tritanopia.css`)]),
 ]);
