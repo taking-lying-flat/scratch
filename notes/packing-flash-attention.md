@@ -230,9 +230,7 @@ sequence lengths      5  3  4
 max_seqlen             5
 ```
 
-这里发生的是一次 metadata compilation，而不是 attention 计算；reset index 给出每条 sample 的物理起点，末尾追加 total token count 后，相邻累计值之差才得到各条 sample 的实际长度
-
-ms-swift 的显式转换函数把 `position_id == 0` 当作 boundary sentinel，主要供需要单独 boundary carrier 的模板使用
+这里发生的是一次 metadata compilation，而不是 attention 计算；reset index 给出每条 sample 的物理起点，末尾追加 total token count 后，相邻累计值之差才得到各条 sample 的实际长度。ms-swift 的显式转换函数把 `position_id == 0` 当作 boundary sentinel，主要供需要单独 boundary carrier 的模板使用
 
 ```python
 def get_packed_seq_params(position_ids):
@@ -648,9 +646,7 @@ def packing_row(self, row):
     return super().packing_row(row)
 ```
 
-`get_rope_index()` 返回 temporal、height 和 width 三层 mRoPE 坐标；这些坐标服务于 Q/K 的旋转位置编码，却不适合作为 sample boundary：视觉网格中的坐标可以重复，多个合法位置也可能同时等于 0；若直接查找 reset 点，会把样本内部的视觉区域误切成多段
-
-因此，ms-swift 在每条样本的三层 mRoPE 前额外增加一层严格递增的文本顺序坐标：
+`get_rope_index()` 返回 temporal、height 和 width 三层 mRoPE 坐标；这些坐标服务于 Q/K 的旋转位置编码，却不适合作为 sample boundary：视觉网格中的坐标可以重复，多个合法位置也可能同时等于 0；若直接查找 reset 点，会把样本内部的视觉区域误切成多段。因此，ms-swift 在每条样本的三层 mRoPE 前额外增加一层严格递增的文本顺序坐标：
 
 ```python
 @staticmethod

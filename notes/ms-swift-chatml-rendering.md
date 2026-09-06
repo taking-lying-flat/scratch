@@ -81,9 +81,7 @@ class Template(ProcessorMixin):
         ...
 ```
 
-这里的 `template_meta` 没有默认值，它是构造模板时必须提供的协议对象。对于 Qwen3.5，该对象就是前面 `register_template()` 注册的 `QwenTemplateMeta`；其 `is_thinking=True`、`thinking_prefix` 和 `non_thinking_prefix` 均来自注册代码
-
-构造函数随后复制这份模板元数据，并把尚未解析的 `enable_thinking=None` 转换成实际布尔值：
+这里的 `template_meta` 没有默认值，它是构造模板时必须提供的协议对象。对于 Qwen3.5，该对象就是前面 `register_template()` 注册的 `QwenTemplateMeta`；其 `is_thinking=True`、`thinking_prefix` 和 `non_thinking_prefix` 均来自注册代码。构造函数随后复制这份模板元数据，并把尚未解析的 `enable_thinking=None` 转换成实际布尔值：
 
 ```python
 template_meta = deepcopy(template_meta)
@@ -190,9 +188,7 @@ Qwen3_5Template._swift_prepare_inputs()
 Template._swift_encode()
 ```
 
-`Qwen3_5Template` 先规范消息内容，真正拼接 ChatML 的公共控制流位于基础类 `Template._swift_encode()`；thinking/non-thinking 的前缀也在这里进入 prompt
-
-推理请求的最后一轮没有现成的 assistant 回答。在 `_swift_encode()` 中，只需关注最后一轮的两个分支：
+`Qwen3_5Template` 先规范消息内容，真正拼接 ChatML 的公共控制流位于基础类 `Template._swift_encode()`；thinking/non-thinking 的前缀也在这里进入 prompt。推理请求的最后一轮没有现成的 assistant 回答。在 `_swift_encode()` 中，只需关注最后一轮的两个分支：
 
 ```python
 response_prefix = self._get_response_prefix(inputs)
@@ -296,9 +292,7 @@ def decode_generate_ids(
 
 Qwen3.5 继承基础模板的 `skip_prompt=True`。因此，ms-swift 的 Transformers backend 先通过 `get_generate_ids()` 切掉整个 prompt，再由 `decode_generate_ids()` 解码新增 token；随后 ms-swift 重新调用 `_get_response_prefix()`，显式执行 `response_prefix + response`。空 `<think></think>` 正是在这一步被拼回最终 response，而不是模型本轮新生成的 token
 
-**ms-swift 的 vLLM backend**
-
-`swift/infer_engine/vllm_engine.py` 不直接返回原生 vLLM 的 `output.text`，而是读取 `output.token_ids`，再次调用 Swift 模板解码：
+**ms-swift 的 vLLM backend**：`swift/infer_engine/vllm_engine.py` 不直接返回原生 vLLM 的 `output.text`，而是读取 `output.token_ids`，再次调用 Swift 模板解码：
 
 ```python
 for output in result.outputs:
@@ -455,9 +449,7 @@ labels:    [-100 ...      | 答案 token]
 
 ### 4. OPD 路径：rollout 模式与训练序列对齐
 
-普通 SFT 使用已有标签，所以 `enable_thinking` 不选择数据类型；OPD / on-policy GKD 在训练内部先让学生模型在线生成，因此其中包含一段真正的推理路径
-
-`swift/rlhf_trainers/rollout_mixin.py` 的 `_generate_completions()` 先预处理样本，再进入 `template.generate_context()`：
+普通 SFT 使用已有标签，所以 `enable_thinking` 不选择数据类型；OPD / on-policy GKD 在训练内部先让学生模型在线生成，因此其中包含一段真正的推理路径。`swift/rlhf_trainers/rollout_mixin.py` 的 `_generate_completions()` 先预处理样本，再进入 `template.generate_context()`：
 
 ```python
 def _generate_completions(self, samples):
@@ -953,9 +945,7 @@ assert audio_placeholder_len == 39
 <|audio_pad|> * 39
 ```
 
-其中 `*` 表示重复相同 token，不是写入 ChatML 的文本字符
-
-token id 层的扩展前结构为：
+其中 `*` 表示重复相同 token，不是写入 ChatML 的文本字符。token id 层的扩展前结构为：
 
 ```python
 vision_start_id = self._tokenize('<|vision_start|>')[0]
@@ -1120,9 +1110,7 @@ position_ids, _ = self._get_get_rope_index()(
 )
 ```
 
-模型返回的 `position_ids` 形状为 `[3, B, L]`，三个轴分别表示 temporal、height 和 width。普通文本与音频在三个轴上使用相同的一维递增位置；图像和视频 token 使用各自网格的三维坐标。视频 temporal 坐标还乘以 `video_second_per_grid × position_id_per_seconds`，从而保留抽帧后每个时间网格的实际间隔
-
-ms-swift 在 collator 内临时增加线性的 text position 轴，形成 `[4, B, L]`：
+模型返回的 `position_ids` 形状为 `[3, B, L]`，三个轴分别表示 temporal、height 和 width。普通文本与音频在三个轴上使用相同的一维递增位置；图像和视频 token 使用各自网格的三维坐标。视频 temporal 坐标还乘以 `video_second_per_grid × position_id_per_seconds`，从而保留抽帧后每个时间网格的实际间隔。ms-swift 在 collator 内临时增加线性的 text position 轴，形成 `[4, B, L]`：
 
 ```python
 text_position_ids = torch.arange(

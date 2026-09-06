@@ -62,9 +62,7 @@ def __add_grad_to_ipg_bucket(self, param):
 - `reduce_and_partition_stream` 是 `gradient buffer` 的 `consumer`
 - `consumer` 必须在 `producer` 完成写入后才能执行 `bucket copy` 和 `reduce-scatter`
 
-**错误的数据依赖**：`PyTorch autograd` 不保证 `backward kernel` 一定运行在 `CUDA default stream`。它会记录 `forward op` 所在的 `stream`，并让对应的 `backward CUDA op` 在相应 `stream` 上执行。`gradient hook` 又在 `autograd backward` 的执行上下文中同步触发，因此 `hook` 内的 `current_stream()` 才是实际生产当前梯度的 `stream`
-
-旧代码建立的是：
+**错误的数据依赖**：`PyTorch autograd` 不保证 `backward kernel` 一定运行在 `CUDA default stream`。它会记录 `forward op` 所在的 `stream`，并让对应的 `backward CUDA op` 在相应 `stream` 上执行。`gradient hook` 又在 `autograd backward` 的执行上下文中同步触发，因此 `hook` 内的 `current_stream()` 才是实际生产当前梯度的 `stream`。旧代码建立的是：
 
 ```text
 default_stream ────────────────► reduce_and_partition_stream
@@ -192,9 +190,7 @@ o_store_producer, o_store_consumer = pipeline.PipelineAsync.create(
 | `release` | `consumer` | 消费完成，将 `stage` 重新标记为 `empty` |
 | `tail` | `producer` | 退出前等待最后使用过的 `buffer` 恢复为 `empty` |
 
-`PipelineState` 保存 `circular buffer` 当前的 `index` 和 `phase`。`tail()` 仍属于同步协议的一部分，必须基于该 `producer` 经过 `acquire/commit` 后形成的正确状态执行
-
-**错误的 `owner` 调用 `tail()`**：`CG0` 的收尾代码错误包含：
+`PipelineState` 保存 `circular buffer` 当前的 `index` 和 `phase`。`tail()` 仍属于同步协议的一部分，必须基于该 `producer` 经过 `acquire/commit` 后形成的正确状态执行。**错误的 `owner` 调用 `tail()`**：`CG0` 的收尾代码错误包含：
 
 ```python
 work = scheduler.get_current_work()

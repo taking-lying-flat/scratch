@@ -100,7 +100,13 @@ function prepareCallouts(tokens) {
   }
 }
 
-function trimParagraphPeriods(tokens) {
+function cleanProsePunctuation(tokens) {
+  // Leave code, math, link targets and HTML attributes intact.
+  for (const token of tokens) {
+    for (const child of token.children ?? []) {
+      if (child.type === 'text') child.content = child.content.replace(/[“”‘’「」『』]/gu, '');
+    }
+  }
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i].type !== 'paragraph_open' || tokens[i + 1]?.type !== 'inline') continue;
     const children = tokens[i + 1].children ?? [];
@@ -109,7 +115,7 @@ function trimParagraphPeriods(tokens) {
       if (child.nesting === -1 || ['softbreak', 'hardbreak'].includes(child.type)) continue;
       if (child.type === 'text' && !child.content.trim()) continue;
       if (child.type === 'html_inline' && /^<\/[\w:-]+\s*>$/.test(child.content)) continue;
-      if (child.type === 'text') child.content = child.content.replace(/。(?=\s*$)/u, '');
+      if (child.type === 'text') child.content = child.content.replace(/[。：:]+(?=\s*$)/u, '');
       break;
     }
   }
@@ -160,7 +166,7 @@ for (const post of posts) {
   tokens.splice(0, 3);
   removeManualToc(tokens);
   prepareCallouts(tokens);
-  trimParagraphPeriods(tokens);
+  cleanProsePunctuation(tokens);
   const usedIds = new Map([[post.titleId, 1]]);
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i].type !== 'heading_open') continue;
