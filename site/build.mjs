@@ -175,18 +175,13 @@ const article = page({
 });
 const home = page({
   title: 'Casebook · 技术笔记', description: '关于模型、论文与源码的技术笔记。', pageClass: 'home-page',
-  body: `<header class="home-intro">
-    <p class="home-eyebrow">笔记索引</p>
-    <h1>Casebook</h1>
-  </header>
-  <section aria-labelledby="post-list-title">
+  body: `<section aria-labelledby="post-list-title">
     <div class="post-list-heading">
-      <h2 id="post-list-title">全部文章 <span>01</span></h2>
-      <a href="archives/">查看归档 <span aria-hidden="true">↗</span></a>
+      <h1 id="post-list-title">全部文章 <span>01</span></h1>
     </div>
     <article class="post-entry">
       <div class="entry-content">
-        <h3><a href="${postPath}">${escape(postTitle)}</a></h3>
+        <h2><a href="${postPath}">${escape(postTitle)}</a></h2>
         <ul class="entry-topics" aria-label="文章主题"><li>Qwen3.5</li><li>Transformers</li></ul>
         <footer class="entry-footer">
           <div class="post-meta">${metadata}</div>
