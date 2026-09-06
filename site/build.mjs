@@ -166,8 +166,6 @@ const article = page({
     <footer class="post-footer">
       <div class="post-topics" aria-label="文章主题"><span>RoPE</span><span>Qwen3.5</span><span>Transformers</span></div>
       <div class="post-actions">
-        <a href="https://github.com/taking-lying-flat/scratch/blob/main/site/content/rope.md">Markdown 源文 ↗</a>
-        <button type="button" id="print-button" hidden>打印 / PDF</button>
         <a href="#top">返回顶部 ↑</a>
       </div>
       <a class="back-link" href="../../">← 全部文章</a>

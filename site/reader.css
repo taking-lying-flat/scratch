@@ -112,8 +112,7 @@ h1 { margin: 0; font-size: 40px; font-weight: 700; letter-spacing: -.8px; }
 .post-topics span { padding: 3px 10px; background: var(--surface); border-radius: 4px; font-size: 12px; }
 .post-actions { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-top: 24px; color: var(--muted); }
 .post-actions a, .back-link { text-decoration: none; }
-.post-actions button { border: 0; padding: 0; background: transparent; }
-.post-actions a:hover, .post-actions button:hover { color: var(--ink); text-decoration: underline; }
+.post-actions a:hover { color: var(--ink); text-decoration: underline; }
 .back-link { display: block; margin-top: 34px; padding: 16px 20px; background: var(--surface); border-radius: 7px; }
 .back-link:hover { text-decoration: underline; }
 /* The index has its own palette and layout; reading pages keep their styling. */

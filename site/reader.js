@@ -34,12 +34,3 @@ if (navigator.clipboard?.writeText) {
     });
   });
 }
-
-const printButton = document.querySelector('#print-button');
-if (printButton) {
-  printButton.hidden = false;
-  printButton.addEventListener('click', async () => {
-    await document.fonts.ready;
-    window.print();
-  });
-}
