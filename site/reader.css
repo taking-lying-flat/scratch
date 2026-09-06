@@ -52,10 +52,11 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
 .post-meta > * + *::before { content: "·"; margin: 0 9px; }
 .prose { font-family: var(--reading); font-size: 17px; font-weight: 400; line-height: 1.85; }
 .prose a { color: var(--accent); }
-.prose h2, .prose h3, .prose h4 { font-weight: 600; letter-spacing: normal; text-wrap: pretty; }
-.prose h2 { margin: 46px 0 22px; padding-bottom: 12px; border-bottom: 1px solid var(--line); font-size: 27px; }
-.prose h3 { margin: 34px 0 18px; font-size: 22px; }
-.prose h4 { margin: 28px 0 16px; font-size: 19px; }
+.prose h2, .prose h3, .prose h4 { font-weight: 600; letter-spacing: normal; text-wrap: wrap; }
+.prose h2 { margin: 32px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 24px; }
+.prose h3 { margin: 26px 0 10px; font-size: 20px; }
+.prose h4 { margin: 20px 0 8px; font-size: 17px; }
+.prose h2 + h3, .prose h3 + h4 { margin-top: 16px; }
 .prose > :first-child { margin-top: 0; }
 .prose strong { font-weight: 600; }
 .prose h2, .prose h3, .prose h4 { scroll-margin-top: 28px; }
@@ -81,7 +82,6 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
 .prose li::marker { color: var(--muted); font-size: .8em; }
 .prose li p { margin-bottom: 10px; }
 .prose p[id], .prose figure[id] { scroll-margin-top: 28px; }
-.prose p[id]:not(:first-child) { margin-top: 40px; }
 .prose :not(pre) > code { font: .82em/1.8 var(--mono); background: var(--surface); color: var(--ink); border-radius: 3px; padding: .16em .32em; overflow-wrap: anywhere; }
 .math-inline { white-space: normal; }
 .math-inline mjx-container { font-size: 1em; }
@@ -226,8 +226,9 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
   .entry-footer { gap: 12px; }
   .entry-details { flex-direction: column; align-items: flex-start; gap: 5px; }
   .home-page-shell .site-footer { padding-inline: 20px; gap: 5px 14px; }
-  .prose h2 { font-size: 23px; }
-  .prose h3 { font-size: 20px; }
+  .prose h2 { font-size: 21px; }
+  .prose h3 { font-size: 18px; }
+  .prose h4 { font-size: 16px; }
   .prose blockquote { padding: 15px 17px; }
   .post-pagination { grid-template-columns: 1fr; }
   .post-pagination .post-next { grid-column: 1; text-align: left; }
@@ -256,7 +257,6 @@ h1 { margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
   .post-meta { font-size: 8pt; }
   .prose { font-size: 10.5pt; line-height: 1.8; }
   .prose p { margin-bottom: 9pt; }
-  .prose p[id]:not(:first-child) { margin-top: 16pt; }
   .prose li { margin-block: 4pt; }
   .equation { font-size: 10.5pt; margin: 12pt 0; padding: 4pt 0; overflow: visible; break-inside: avoid; }
   .code-block { --code-bg: #fff; --code-bar: #f6f8fa; --code-ink: #1f2328; --code-muted: #59636e; --code-border: #d1d9e0; --code-keyword: #cf222e; --code-string: #0a3069; --code-title: #6639ba; --code-constant: #0550ae; --code-variable: #a40e26; --code-added: #0550ae; --code-added-bg: #ddf4ff; --code-deleted: #82071e; --code-deleted-bg: #ffebe9; margin: 12pt 0; border: 1px solid var(--code-border); border-radius: 4px; box-shadow: none; break-inside: avoid; }
