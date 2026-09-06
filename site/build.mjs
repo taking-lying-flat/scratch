@@ -121,7 +121,7 @@ markdown.renderer.rules.fence = (items, i) => {
 const content = markdown.renderer.render(tokens, markdown.options, {});
 const toc = sections.map(({ id, label }) => `<li><a href="#${id}">${label}</a></li>`).join('\n');
 const template = await readFile(path.join(root, 'template.html'), 'utf8');
-const siteUrl = 'https://taking-lying-flat.github.io/scratch/';
+const siteUrl = 'https://taking-lying-flat.github.io/blog/';
 const postPath = 'posts/rope/';
 const description = '从角频率、二维旋转矩阵到 Qwen3.5 的 partial RoPE：论文公式与 Transformers 源码的对应。';
 const proseText = tokens.filter((token) => token.type === 'inline').map((token) => token.content).join(' ');
@@ -153,7 +153,7 @@ function page({ title, description, route = '', body, type = 'website', pageClas
 }
 
 const article = page({
-  title: `${postTitle} · Casebook`, description, route: postPath, type: 'article', pageClass: 'post-page',
+  title: `${postTitle} · Blog`, description, route: postPath, type: 'article', pageClass: 'post-page',
   body: `<article class="post-single">
     <header class="post-header">
       <h1>${escape(postTitle)}</h1>
@@ -174,7 +174,7 @@ const article = page({
   </article>`,
 });
 const home = page({
-  title: 'Casebook · 技术笔记', description: '关于模型、论文与源码的技术笔记。', pageClass: 'home-page',
+  title: 'Blog · 技术笔记', description: '关于模型、论文与源码的技术笔记。', pageClass: 'home-page',
   body: `<section aria-labelledby="post-list-title">
     <div class="post-list-heading">
       <h1 id="post-list-title">全部文章 <span>01</span></h1>
@@ -202,7 +202,7 @@ const home = page({
   </section>`,
 });
 const archives = page({
-  title: '归档 · Casebook', description: 'Casebook 技术笔记归档。', route: 'archives/', pageClass: 'archive-page',
+  title: '归档 · Blog', description: 'Blog 技术笔记归档。', route: 'archives/', pageClass: 'archive-page',
   body: `<header class="page-header"><h1>归档</h1><p>1 篇文章</p></header>
     <section class="archive-year" aria-labelledby="year-2026">
       <h2 id="year-2026">2026 <span>1</span></h2>
@@ -241,6 +241,6 @@ await writeFile(path.join(output, 'sitemap.xml'), `<?xml version="1.0" encoding=
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${['', postPath, 'archives/'].map((route) => `<url><loc>${siteUrl}${route}</loc></url>`).join('')}</urlset>\n`);
 await writeFile(path.join(output, 'rope/index.html'), `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="0;url=../${postPath}"><link rel="canonical" href="${siteUrl}${postPath}"><title>${escape(postTitle)} · Casebook</title></head>
+<meta http-equiv="refresh" content="0;url=../${postPath}"><link rel="canonical" href="${siteUrl}${postPath}"><title>${escape(postTitle)} · Blog</title></head>
 <body><a href="../${postPath}">阅读 ${escape(postTitle)}</a><script>location.replace('../${postPath}' + location.search + location.hash);</script></body></html>\n`);
 console.log(`Built home, archives, RoPE article, and legacy redirect: ${displayCount} display formulas, ${inlineCount} inline formulas. All assets are local.`);

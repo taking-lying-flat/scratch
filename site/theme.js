@@ -1,6 +1,6 @@
 (() => {
   let theme;
-  try { theme = localStorage.getItem('casebook-theme'); } catch {}
+  try { theme = localStorage.getItem('blog-theme'); } catch {}
   if (theme !== 'light' && theme !== 'dark') {
     theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   }

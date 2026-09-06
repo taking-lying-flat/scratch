@@ -1,5 +1,5 @@
 {
-  "name": "casebook-reader",
+  "name": "blog-reader",
   "private": true,
   "type": "module",
   "scripts": {
