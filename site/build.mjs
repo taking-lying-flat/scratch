@@ -179,7 +179,6 @@ const home = page({
   title: 'Casebook · 技术笔记', description: '关于模型、论文与源码的技术笔记。', pageClass: 'home-page',
   body: `<header class="home-intro">
     <h1>Casebook</h1>
-    <p>关于模型、论文与源码的笔记。</p>
   </header>
   <section aria-label="文章列表">
     <article class="post-entry">
