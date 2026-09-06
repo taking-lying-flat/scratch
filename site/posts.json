@@ -1,0 +1,44 @@
+[
+  {
+    "file": "../notes/rope.md",
+    "slug": "rope",
+    "date": "2026-09-05",
+    "tags": ["RoPE", "Qwen3.5"]
+  },
+  {
+    "file": "../notes/ms-swift-model-runtime-failures.md",
+    "slug": "ms-swift-model-runtime-failures",
+    "date": "2026-08-30",
+    "tags": ["ms-swift", "模型运行时"]
+  },
+  {
+    "file": "../notes/ms-swift-chatml-rendering.md",
+    "slug": "ms-swift-chatml-rendering",
+    "date": "2026-08-29",
+    "tags": ["ChatML", "Qwen3.5"]
+  },
+  {
+    "file": "../notes/packing-flash-attention.md",
+    "slug": "packing-flash-attention",
+    "date": "2026-08-27",
+    "tags": ["Packing", "FlashAttention"]
+  },
+  {
+    "file": "../notes/gemma-4-nvfp4-moe-missing-scales.md",
+    "slug": "gemma-4-nvfp4-moe-missing-scales",
+    "date": "2026-08-27",
+    "tags": ["Gemma 4", "NVFP4"]
+  },
+  {
+    "file": "../notes/flashinfer-sm100-gdn-pipeline-deadlock.md",
+    "slug": "flashinfer-sm100-gdn-pipeline-deadlock",
+    "date": "2026-08-27",
+    "tags": ["CUDA", "DeepSpeed", "FlashInfer"]
+  },
+  {
+    "file": "../notes/vllm-51593-persistent-topk-deadlock.md",
+    "slug": "vllm-51593-persistent-topk-deadlock",
+    "date": "2026-08-26",
+    "tags": ["vLLM", "CUDA"]
+  }
+]
