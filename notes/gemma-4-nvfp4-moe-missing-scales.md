@@ -139,7 +139,7 @@ __device__ __forceinline__ uint32_t pack_fp4(float2 (&v)[4]) {
 
 `cvt.rn.satfinite.e2m1x2.f32` 是真正完成数值选择的指令：`rn` 表示 round-to-nearest、ties-to-even，`satfinite` 将超出 E2M1 范围的输入饱和到最大有限值，`e2m1x2.f32` 表示从两个 FP32 输入生成两个 E2M1 4-bit 值。四条转换指令共生成 8 个 E2M1 值，每两个值装入一个 byte；`mov.b32` 再把 4 个 byte 合并为一个 `uint32_t`。后面的 `cvt_warp_fp16_to_fp4` 在完成 block scaling 后调用 `pack_fp4`，因此上面的编码表就是由硬件转换指令实施的，而不是由软件逐项查表。NVFP4 不直接用这组离散值拟合整个 tensor，而是采用两级 scale：
 
-| 对比项 | 第一层缩放 | 第二层缩放 |
+| 项目 | 第一层缩放 | 第二层缩放 |
 | --- | --- | --- |
 | 名称 | Micro-block scale | Tensor-level global scale |
 | 格式 | `FP8 E4M3` | `FP32` |
