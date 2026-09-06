@@ -156,7 +156,6 @@ const article = page({
   body: `<article class="post-single">
     <header class="post-header">
       <h1>RoPE</h1>
-      <p class="post-description">从角频率、旋转矩阵到 Qwen3.5 实现</p>
       <div class="post-meta">${metadata}<span>taking-lying-flat</span></div>
     </header>
     <details class="toc">
@@ -183,7 +182,6 @@ const home = page({
   <section aria-label="文章列表">
     <article class="post-entry">
       <h2><a href="${postPath}">RoPE</a></h2>
-      <p class="entry-description">从角频率、旋转矩阵到 Qwen3.5 实现</p>
       <p class="entry-excerpt">${description}</p>
       <footer class="entry-footer"><div class="post-meta">${metadata}</div><span class="entry-arrow" aria-hidden="true">→</span></footer>
     </article>
@@ -196,7 +194,6 @@ const archives = page({
       <h2 id="year-2026">2026 <span>1</span></h2>
       <div class="archive-month"><h3>九月</h3><article class="archive-entry">
         <h4><a href="../${postPath}">RoPE</a></h4>
-        <p>从角频率、旋转矩阵到 Qwen3.5 实现</p>
         <div class="post-meta">${metadata}</div>
       </article></div>
     </section>`,
