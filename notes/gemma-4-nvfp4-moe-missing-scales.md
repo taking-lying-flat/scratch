@@ -139,30 +139,13 @@ __device__ __forceinline__ uint32_t pack_fp4(float2 (&v)[4]) {
 
 `cvt.rn.satfinite.e2m1x2.f32` 是真正完成数值选择的指令：`rn` 表示 round-to-nearest、ties-to-even，`satfinite` 将超出 E2M1 范围的输入饱和到最大有限值，`e2m1x2.f32` 表示从两个 FP32 输入生成两个 E2M1 4-bit 值。四条转换指令共生成 8 个 E2M1 值，每两个值装入一个 byte；`mov.b32` 再把 4 个 byte 合并为一个 `uint32_t`。后面的 `cvt_warp_fp16_to_fp4` 在完成 block scaling 后调用 `pack_fp4`，因此上面的编码表就是由硬件转换指令实施的，而不是由软件逐项查表。NVFP4 不直接用这组离散值拟合整个 tensor，而是采用两级 scale：
 
-<div align="center">
-<table>
-  <thead>
-    <tr>
-      <th align="center">第一层 scaling factor</th>
-      <th align="center">第二层 scaling factor</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td align="center"><strong>Micro-block scale</strong><br><code>FP8 E4M3</code></td>
-      <td align="center"><strong>Tensor-level global scale</strong><br><code>FP32</code></td>
-    </tr>
-    <tr>
-      <td>每连续 <code>16</code> 个元素共享一个 scale</td>
-      <td>整个 tensor；在 MoE 中细化到 expert/projection</td>
-    </tr>
-    <tr>
-      <td>Weight：<code>weight_scale</code><br>Activation：runtime 动态生成</td>
-      <td>Weight：<code>weight_scale_2</code><br>Activation：<code>input_scale</code></td>
-    </tr>
-  </tbody>
-</table>
-</div>
+| 对比项 | 第一层缩放 | 第二层缩放 |
+| --- | --- | --- |
+| 名称 | Micro-block scale | Tensor-level global scale |
+| 格式 | `FP8 E4M3` | `FP32` |
+| 范围 | 每连续 `16` 个元素共享一个 scale | 整个 tensor；在 MoE 中细化到 expert/projection |
+| 权重 | `weight_scale` | `weight_scale_2` |
+| 激活 | 运行时动态生成 | `input_scale` |
 
 第一层 block scale 描述 16 元素 micro-block 的局部动态范围。FP4 E2M1 主要保留 block 内部的相对数值，E4M3 block scale 将该 block 恢复到相应量级。第二层 global scale 描述 tensor 级量化范围，用于把各 block scale 映射到 E4M3 可表示的范围，并在 GEMM 输出缩放时恢复整体数值尺度。E2M1 的最大有限值为 `6`，E4M3 的最大有限值为 `448`，二者对应的组合范围为 `2688`；ModelOpt 保存的 global scale 以这一范围为基础，并可结合 calibration headroom 调整
 
