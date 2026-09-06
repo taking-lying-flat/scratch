@@ -10,7 +10,7 @@ if (themeButton) {
   themeButton.addEventListener('click', () => {
     const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = theme;
-    document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#1d1e20' : '#ffffff';
+    document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#232830' : '#ffffff';
     try { localStorage.setItem('blog-theme', theme); } catch {}
     syncThemeLabel();
   });

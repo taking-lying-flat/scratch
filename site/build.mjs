@@ -229,8 +229,11 @@ const home = page({
     <div class="post-list">${posts.map((post) => `<article class="post-entry">
       <h2><a href="${post.route}">${escape(post.title)}</a></h2>
       <footer class="entry-footer">
-        <div class="post-meta">${metadata(post)}</div>
-        <ul class="entry-topics" aria-label="文章主题">${post.tags.map((tag) => `<li>${escape(tag)}</li>`).join('')}</ul>
+        <div class="entry-details">
+          <div class="post-meta">${metadata(post)}</div>
+          <ul class="entry-topics" aria-label="文章主题">${post.tags.map((tag) => `<li>${escape(tag)}</li>`).join('')}</ul>
+        </div>
+        <svg class="entry-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
       </footer>
     </article>`).join('\n')}</div>
   </section>`,
