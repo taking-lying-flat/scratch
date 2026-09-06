@@ -1,16 +1,18 @@
 const themeButton = document.querySelector('.theme-toggle');
 if (themeButton) {
   const syncThemeLabel = () => {
-    const label = document.documentElement.dataset.theme === 'dark' ? '切换为浅色' : '切换为深色';
+    const dark = document.documentElement.dataset.colorMode === 'dark';
+    const label = dark ? '切换到 Light Tritanopia' : '切换到 Dark Tritanopia';
     themeButton.setAttribute('aria-label', label);
-    themeButton.title = label;
+    themeButton.title = `${dark ? 'Dark Tritanopia' : 'Light Tritanopia'} · ${label}`;
   };
   themeButton.hidden = false;
   syncThemeLabel();
   themeButton.addEventListener('click', () => {
-    const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    const theme = document.documentElement.dataset.colorMode === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = theme;
-    document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#232830' : '#ffffff';
+    document.documentElement.dataset.colorMode = theme;
+    document.querySelector('meta[name="theme-color"]').content = getComputedStyle(document.documentElement).getPropertyValue('--bgColor-muted').trim();
     try { localStorage.setItem('blog-theme', theme); } catch {}
     syncThemeLabel();
   });

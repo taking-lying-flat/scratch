@@ -132,7 +132,6 @@ markdown.renderer.rules.fence = (items, i, _options, env) => {
   }</span>`;
   return `<figure class="code-block"${id ? ` id="${escape(id)}"` : ''}>
     <figcaption>
-      <span class="window-controls" aria-hidden="true"><span></span><span></span><span></span></span>
       <span class="window-title" title="${escape(name)}">${escape(name)}</span>
       <span class="code-actions"><span class="code-language">${escape(label)}</span><button type="button" class="copy-button" hidden>复制</button></span>
     </figcaption>
@@ -196,9 +195,14 @@ for (const post of posts) {
 }
 
 const template = await readFile(path.join(root, 'template.html'), 'utf8');
-const files = ['reader.css', 'reader.js', 'theme.js', 'favicon.svg'];
+const primer = path.join(root, 'node_modules/@primer/primitives');
+const assets = new Map([
+  ...['reader.css', 'reader.js', 'theme.js', 'favicon.svg'].map((file) => [file, path.join(root, file)]),
+  ...['light', 'dark'].map((mode) => [`github-${mode}-tritanopia.css`,
+    path.join(primer, `dist/css/functional/themes/${mode}-tritanopia.css`)]),
+]);
 const assetVersion = createHash('sha256');
-for (const file of files) assetVersion.update(await readFile(path.join(root, file)));
+for (const file of assets.values()) assetVersion.update(await readFile(file));
 const version = assetVersion.digest('hex').slice(0, 10);
 
 function page({ title, description, route = '', body, type = 'website', pageClass = '' }) {
@@ -213,7 +217,7 @@ function page({ title, description, route = '', body, type = 'website', pageClas
     if (!(key in values)) throw new Error(`Unknown template field: ${key}`);
     return values[key];
   });
-  for (const file of files) html = html.replaceAll(`assets/${file}"`, `assets/${file}?v=${version}"`);
+  for (const file of assets.keys()) html = html.replaceAll(`assets/${file}"`, `assets/${file}?v=${version}"`);
   return html;
 }
 
@@ -286,15 +290,13 @@ for (const [index, post] of posts.entries()) {
 }
 
 await writeFile(path.join(output, 'assets/math.css'), adaptor.cssText(svg.styleSheet(document)));
-for (const file of files) await copyFile(path.join(root, file), path.join(output, 'assets', file));
-for (const [name, directory] of [['jetbrains-mono', ''], ['noto-serif-sc', 'noto-serif-sc']]) {
-  const fonts = path.join(root, 'node_modules/@fontsource-variable', name);
-  const destination = path.join(output, 'assets/fonts', directory);
-  await cp(path.join(fonts, 'files'), path.join(destination, 'files'), { recursive: true });
-  await copyFile(path.join(fonts, 'index.css'), path.join(destination, 'index.css'));
-  await copyFile(path.join(fonts, 'LICENSE'), path.join(destination, 'LICENSE'));
-}
+for (const [name, file] of assets) await copyFile(file, path.join(output, 'assets', name));
+const fonts = path.join(root, 'node_modules/@fontsource-variable/jetbrains-mono');
+await cp(path.join(fonts, 'files'), path.join(output, 'assets/fonts/files'), { recursive: true });
+await copyFile(path.join(fonts, 'index.css'), path.join(output, 'assets/fonts/index.css'));
+await copyFile(path.join(fonts, 'LICENSE'), path.join(output, 'assets/fonts/LICENSE'));
 await mkdir(path.join(output, 'assets/licenses'), { recursive: true });
+await copyFile(path.join(primer, 'LICENSE'), path.join(output, 'assets/licenses/Primer.txt'));
 await copyFile(path.join(root, 'node_modules/@mathjax/src/LICENSE'), path.join(output, 'assets/licenses/MathJax.txt'));
 const mathFont = JSON.parse(await readFile(path.join(root, 'node_modules/@mathjax/mathjax-newcm-font/package.json'), 'utf8'));
 await writeFile(path.join(output, 'assets/licenses/NewCM.txt'),
